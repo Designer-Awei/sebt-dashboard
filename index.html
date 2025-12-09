@@ -154,6 +154,34 @@
             box-shadow: 0 0 8px rgba(59, 130, 246, 0.3);
         }
 
+        /* 锁定状态样式 */
+        .grid-item.locked {
+            border-color: #3b82f6;
+            background-color: rgba(59, 130, 246, 0.1);
+            box-shadow: 0 0 8px rgba(59, 130, 246, 0.2);
+            opacity: 0.9;
+        }
+
+        .grid-item.locked .direction-label::after {
+            content: " 🔒";
+            color: #f59e0b;
+            font-weight: bold;
+        }
+
+        /* 完成状态样式 */
+        .grid-item.completed {
+            border-color: #6b7280;
+            background-color: rgba(107, 114, 128, 0.1);
+            opacity: 0.7;
+            pointer-events: none; /* 禁用点击事件 */
+        }
+
+        .grid-item.completed .direction-label::after {
+            content: " ✅";
+            color: #6b7280;
+            font-weight: bold;
+        }
+
         /* 网格容器 */
         .grid-container {
             flex: 1;
@@ -336,6 +364,21 @@
             background: #4b5563;
         }
 
+        .button-group {
+            display: flex;
+            gap: 8px;
+            width: 100%;
+        }
+
+        .control-button.small {
+            flex: 1;
+            width: auto;
+            padding: 10px;
+            font-size: 14px;
+            min-height: 44px; /* 确保两个按钮高度一致 */
+            line-height: 1.2;
+        }
+
         /* 响应式设计 */
         @media (max-width: 1024px) {
             .sidebar {
@@ -399,7 +442,11 @@
             </div>
 
             <div class="controls">
-                <button class="control-button" id="mock-data-btn">模拟8方向数据</button>
+                <div class="button-group">
+                    <button class="control-button small" id="mock-data-btn">模拟8方向数据</button>
+                    <button class="control-button small" id="mock-lock-btn">模拟锁定</button>
+                </div>
+                <button class="control-button secondary" id="reset-locked-btn">重置实验状态</button>
                 <button class="control-button secondary" id="clear-logs-btn">清空日志</button>
             </div>
         </div>

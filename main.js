@@ -125,23 +125,54 @@ async function autoConnectSerialPort() {
     console.log('[SERIAL] 正在扫描可用的串口...');
     const ports = await SerialPort.list();
 
-    // 查找可能的ESP32串口 (通常是CH340/CH341)
+    // 查找可能的ESP32串口 (支持多种USB转串口芯片)
     const esp32Ports = ports.filter(port => {
-      return port.manufacturer && (
+      // 制造商匹配
+      const manufacturerMatch = port.manufacturer && (
         port.manufacturer.toLowerCase().includes('wch') || // CH340/CH341
         port.manufacturer.toLowerCase().includes('silicon') || // CP210x
-        port.vendorId === '10c4' || // Silicon Labs
-        port.vendorId === '1a86'    // QinHeng (CH340)
+        port.manufacturer.toLowerCase().includes('ftdi') || // FTDI
+        port.manufacturer.toLowerCase().includes('arduino') || // Arduino
+        port.manufacturer.toLowerCase().includes('esp32') || // ESP32
+        port.manufacturer.toLowerCase().includes('usb-serial') // 通用USB串口
       );
+
+      // Vendor ID匹配 (更可靠)
+      const vendorIdMatch = port.vendorId && (
+        port.vendorId === '10c4' || // Silicon Labs CP210x
+        port.vendorId === '1a86' || // QinHeng CH340/CH341
+        port.vendorId === '0403' || // FTDI
+        port.vendorId === '2341' || // Arduino
+        port.vendorId === '303a'    // Espressif (ESP32)
+      );
+
+      // Product ID匹配 (ESP32系列)
+      const productIdMatch = port.productId && (
+        port.productId === 'ea60' || // ESP32-S2
+        port.productId === 'ea61' || // ESP32-S3
+        port.productId === 'ea62' || // ESP32-C3
+        port.productId === 'ea63'    // ESP32-C6
+      );
+
+      // 如果有明确的制造商或VendorID匹配，或者是ESP32产品ID，则认为是ESP32
+      return manufacturerMatch || vendorIdMatch || productIdMatch || port.serialNumber;
     });
 
     if (esp32Ports.length > 0) {
       const portPath = esp32Ports[0].path;
-      console.log(`[SERIAL] 发现ESP32串口: ${portPath}, 正在连接...`);
+      const portInfo = esp32Ports[0];
+      console.log(`[SERIAL] 发现ESP32串口: ${portPath}`);
+      console.log(`[SERIAL] 串口信息: VID=${portInfo.vendorId}, PID=${portInfo.productId}, 制造商=${portInfo.manufacturer}`);
+      console.log(`[SERIAL] 正在连接...`);
 
       connectToSerialPort(portPath);
     } else {
-      console.log('[SERIAL] 未发现ESP32串口，将定期重试...');
+      console.log('[SERIAL] 未发现ESP32串口设备');
+      console.log('[SERIAL] 可用串口列表:');
+      ports.forEach((port, index) => {
+        console.log(`  ${index + 1}. ${port.path} - ${port.manufacturer || '未知'} (${port.vendorId || '未知'}:${port.productId || '未知'})`);
+      });
+      console.log('[SERIAL] 将在5秒后重试...');
       // 5秒后重试
       setTimeout(autoConnectSerialPort, 5000);
     }
@@ -207,6 +238,16 @@ function connectToSerialPort(portPath) {
     // 监听串口错误
     serialPort.on('error', (error) => {
       console.error('[SERIAL] 串口错误:', error);
+
+      // 检测常见的串口占用错误
+      if (error.message.includes('Access denied') ||
+          error.message.includes('EBUSY') ||
+          error.message.includes('being used by another application')) {
+        console.error('[SERIAL] 串口被其他程序占用！请检查：');
+        console.error('  1. Arduino IDE的串口监视器是否已关闭');
+        console.error('  2. 其他串口工具是否正在使用此端口');
+        console.error('  3. 系统是否有其他程序占用了此串口');
+      }
     });
 
     // 监听解析后的数据
@@ -215,10 +256,36 @@ function connectToSerialPort(portPath) {
     });
 
     // 打开串口
-    serialPort.open();
+    serialPort.open((error) => {
+      if (error) {
+        console.error('[SERIAL] 打开串口失败:', error.message);
+
+        // 检测串口占用
+        if (error.message.includes('Access denied') ||
+            error.message.includes('EBUSY') ||
+            error.message.includes('being used by another application') ||
+            error.message.includes('Port is busy')) {
+          console.error('[SERIAL] ❌ 串口被占用！解决方案：');
+          console.error('  1️⃣ 关闭 Arduino IDE 的串口监视器');
+          console.error('  2️⃣ 关闭其他串口调试工具');
+          console.error('  3️⃣ 检查设备管理器确认串口可用');
+          console.error('  4️⃣ 重启 Arduino IDE 和本应用');
+        }
+
+        // 清理资源并重试
+        if (serialPort) {
+          serialPort.close();
+          serialPort = null;
+        }
+        parser = null;
+        setTimeout(autoConnectSerialPort, 5000);
+      } else {
+        console.log(`[SERIAL] ✅ 串口 ${portPath} 连接成功！`);
+      }
+    });
 
   } catch (error) {
-    console.error('[SERIAL] 连接串口失败:', error);
+    console.error('[SERIAL] 创建串口对象失败:', error);
     setTimeout(autoConnectSerialPort, 2000);
   }
 }
@@ -228,28 +295,25 @@ function handleSerialData(data) {
   try {
     console.log(`[SERIAL] 收到数据: ${data}`);
 
-    // 检查是否是数据包 (以数字开头表示包类型)
-    if (data.length >= 2 && /^\d/.test(data)) {
-      // 解析数据包: [TYPE][LENGTH][DATA...][CHECKSUM]
-      const packetType = data.charCodeAt(0);
-      const dataLength = data.charCodeAt(1);
-      const packetData = data.substring(2, 2 + dataLength);
+    // 检查是否是数据消息 (DATA: 开头的JSON数据)
+    if (data.startsWith('DATA:')) {
+      const jsonData = data.substring(5).trim(); // 去掉"DATA:"前缀
+      console.log(`[SERIAL] 解析传感器数据: ${jsonData}`);
 
-      console.log(`[SERIAL] 解析数据包 - 类型:${packetType}, 长度:${dataLength}, 数据:${packetData}`);
-
-      switch (packetType) {
-        case 1: // PACKET_TYPE_SENSOR_DATA (0x01)
-          handleSensorData(packetData);
-          break;
-        case 2: // PACKET_TYPE_STATUS (0x02)
-          handleStatusData(packetData);
-          break;
-        case 3: // PACKET_TYPE_COMMAND (0x03)
-          handleCommandData(packetData);
-          break;
-        default:
-          console.log(`[SERIAL] 未知数据包类型: ${packetType}`);
+      try {
+        const sensorData = JSON.parse(jsonData);
+        handleSensorData(sensorData);
+      } catch (parseError) {
+        console.error('[SERIAL] JSON解析失败:', parseError);
       }
+    } else if (data.startsWith('STATUS:')) {
+      const statusData = data.substring(7).trim(); // 去掉"STATUS:"前缀
+      console.log(`[SERIAL] 解析状态数据: ${statusData}`);
+      handleStatusData(statusData);
+    } else if (data.startsWith('CMD:')) {
+      const commandData = data.substring(4).trim(); // 去掉"CMD:"前缀
+      console.log(`[SERIAL] 解析命令数据: ${commandData}`);
+      handleCommandData(commandData);
     } else if (data.startsWith('BLE>')) {
       // BLE转发的数据
       const bleData = data.substring(4); // 去掉"BLE>"前缀
@@ -271,10 +335,8 @@ function handleSerialData(data) {
 }
 
 // 处理传感器数据
-function handleSensorData(jsonData) {
+function handleSensorData(sensorData) {
   try {
-    const sensorData = JSON.parse(jsonData);
-
     console.log('[SENSOR] 收到传感器数据:', sensorData);
 
     // 通过IPC转发给渲染进程
@@ -286,7 +348,7 @@ function handleSensorData(jsonData) {
       });
     }
   } catch (error) {
-    console.error('[SENSOR] 解析传感器数据失败:', error);
+    console.error('[SENSOR] 处理传感器数据失败:', error);
   }
 }
 

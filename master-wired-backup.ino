@@ -1,8 +1,8 @@
 /*
- * SEBT Host - 有线保底方案 (USB串口 + BLE)
+ * SEBT Host - 简化测距版本 (参考原始代码)
  * 硬件：ESP32-C3, TCA9548A, 8x VL53L1X, SH1106 OLED
- * 通信：USB串口(与PC) + BLE(与从机)
- * 功能：距离测量 + 3秒锁定 + 有线数据传输
+ * 通信：USB串口(与PC)
+ * 功能：距离测量 + 3秒锁定 + 串口数据传输
  */
 
 #include <Wire.h>
@@ -10,10 +10,6 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SH110X.h>
 #include <Adafruit_VL53L1X.h>
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
 
 // --- 1. 硬件引脚定义 ---
 #define SDA_PIN 8
@@ -35,13 +31,7 @@ Adafruit_SH1106G display = Adafruit_SH1106G(128, 64, &Wire, -1);
 // ToF 传感器对象
 Adafruit_VL53L1X vl53 = Adafruit_VL53L1X();
 
-// --- 2. BLE配置 ---
-#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
-BLEServer* pServer = NULL;
-BLECharacteristic* pCharacteristic = NULL;
-bool deviceConnected = false;
-bool oldDeviceConnected = false;
+// --- 2. 全局变量 ---
 
 // --- 3. 通信协议定义 ---
 // 数据包格式: [TYPE][LENGTH][DATA...][CHECKSUM]
@@ -76,8 +66,8 @@ bool isLocked = false;
 int lastCandidateIndex = -1;
 unsigned long stableStartTime = 0;
 
-// BLE数据缓冲区
-String bleDataBuffer = "";
+// 数据包序号
+int packetSequence = 0;
 
 // --- 辅助函数：切换Mux通道 ---
 void tcaSelect(uint8_t i) {
@@ -94,111 +84,39 @@ void setRGB(bool r, bool g, bool b) {
   digitalWrite(PIN_LED_B, b);
 }
 
-// --- BLE服务器回调类 ---
-class MyServerCallbacks: public BLEServerCallbacks {
-    void onConnect(BLEServer* pServer) {
-      deviceConnected = true;
-      Serial.println("BLE device connected");
-      setRGB(0, 1, 0); // 绿灯表示BLE连接
-    };
 
-    void onDisconnect(BLEServer* pServer) {
-      deviceConnected = false;
-      Serial.println("BLE device disconnected");
-      setRGB(1, 0, 0); // 红灯表示BLE断开
-    }
-};
-
-// --- BLE特征回调类 ---
-class MyCallbacks: public BLECharacteristicCallbacks {
-    void onWrite(BLECharacteristic *pCharacteristic) {
-      std::string rxValue = pCharacteristic->getValue();
-
-      if (rxValue.length() > 0) {
-        // 接收到BLE数据，转发给PC
-        Serial.print("BLE>");
-        Serial.println(rxValue.c_str());
-
-        // 解析数据包
-        if (rxValue.length() >= 3) {
-          uint8_t packetType = rxValue[0];
-          uint8_t dataLength = rxValue[1];
-
-          if (packetType == PACKET_TYPE_SENSOR_DATA && dataLength > 0) {
-            // 处理从机传感器数据
-            Serial.printf("Received sensor data from slave: %d bytes\n", dataLength);
-            // 这里可以添加数据处理逻辑
-          }
-        }
-      }
-    }
-};
-
-// --- BLE初始化 ---
-void initBLE() {
-  Serial.println("Initializing BLE...");
-
-  BLEDevice::init("SEBT-Host");
-  pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());
-
-  BLEService *pService = pServer->createService(SERVICE_UUID);
-
-  pCharacteristic = pService->createCharacteristic(
-                      CHARACTERISTIC_UUID,
-                      BLECharacteristic::PROPERTY_READ |
-                      BLECharacteristic::PROPERTY_WRITE |
-                      BLECharacteristic::PROPERTY_NOTIFY
-                    );
-
-  pCharacteristic->setCallbacks(new MyCallbacks());
-  pCharacteristic->addDescriptor(new BLE2902());
-
-  pService->start();
-
-  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-  pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->setScanResponse(false);
-  pAdvertising->setMinPreferred(0x0);
-  BLEDevice::startAdvertising();
-
-  Serial.println("BLE server started, waiting for slave connection...");
-}
-
-// --- 数据打包函数 ---
-void sendPacketToPC(uint8_t packetType, const String& data) {
-  uint8_t length = data.length();
-  uint8_t checksum = packetType ^ length;
-
-  for (char c : data) {
-    checksum ^= (uint8_t)c;
-  }
-
-  // 发送数据包: [TYPE][LENGTH][DATA...][CHECKSUM]
-  Serial.write(packetType);
-  Serial.write(length);
-  Serial.print(data);
-  Serial.write(checksum);
-  Serial.println(); // 包结束
-}
 
 // --- 发送传感器数据到PC ---
 void sendSensorDataToPC(int directionIndex, int distance) {
+  // 构建包含8个方向距离的完整数据包
   String data = "{";
-  data += "\"direction\":" + String(directionIndex) + ",";
-  data += "\"directionName\":\"" + String(DIR_NAMES[directionIndex]) + "\",";
-  data += "\"distance\":" + String(distance) + ",";
+  data += "\"sequence\":" + String(packetSequence++) + ",";
   data += "\"timestamp\":" + String(millis()) + ",";
-  data += "\"locked\":" + (isLocked ? "true" : "false");
+  data += "\"distances\":[";
+
+  // 添加8个方向的距离数据
+  for (int i = 0; i < 8; i++) {
+    data += String(distances[i]);
+    if (i < 7) data += ",";
+  }
+  data += "],";
+
+  data += "\"currentMinDirection\":" + String(directionIndex) + ",";
+  data += "\"currentMinDistance\":" + String(distance) + ",";
+  data += "\"isLocked\":" + String(isLocked ? "true" : "false");
   data += "}";
 
-  sendPacketToPC(PACKET_TYPE_SENSOR_DATA, data);
+  // 使用简单的文本协议发送数据
+  Serial.print("DATA:");
+  Serial.println(data);
+
+  // 调试信息 (只在锁定状态时输出，避免刷屏)
+  if (isLocked) {
+    Serial.print("[DATA] 发送锁定数据包: ");
+    Serial.println(data);
+  }
 }
 
-// --- 发送状态数据到PC ---
-void sendStatusToPC(const String& status) {
-  sendPacketToPC(PACKET_TYPE_STATUS, status);
-}
 
 // --- 处理来自PC的命令 ---
 void processPCCommand() {
@@ -207,23 +125,20 @@ void processPCCommand() {
     command.trim();
 
     if (command.length() > 0) {
-      Serial.print("PC>");
+      Serial.print("[CMD] 收到命令: ");
       Serial.println(command);
 
       // 检查是否是手动测距命令
-      if (command.startsWith("PC>MEASURE:")) {
-        int channel = command.substring(11).toInt(); // 提取通道号
+      if (command.startsWith("MEASURE:")) {
+        int channel = command.substring(8).toInt(); // 提取通道号
         performManualMeasurement(channel);
-        return;
-      }
-
-      // 其他命令转发给BLE从机
-      if (deviceConnected && pCharacteristic != NULL) {
-        pCharacteristic->setValue(command.c_str());
-        pCharacteristic->notify();
-        Serial.println("Command forwarded to BLE slave");
+      } else if (command.startsWith("RESET")) {
+        // 复位命令
+        isLocked = false;
+        lastCandidateIndex = -1;
+        Serial.println("[CMD] 系统复位");
       } else {
-        Serial.println("BLE slave not connected, command ignored");
+        Serial.println("[CMD] 未知命令");
       }
     }
   }
@@ -231,39 +146,27 @@ void processPCCommand() {
 
 // --- 执行手动测距 ---
 void performManualMeasurement(int channel) {
-  Serial.printf("Manual measurement requested for channel %d\n", channel);
+  if (channel >= 0 && channel < 8) {
+    Serial.printf("[MEASURE] 手动测距方向: %s\n", DIR_NAMES[channel]);
 
-  // 切换到指定通道
-  tcaSelect(channel);
+    // 切换到指定通道
+    tcaSelect(channel);
 
-  // 等待传感器准备
-  delay(50);
+    // 读取距离数据
+    if (vl53.dataReady()) {
+      int distance = vl53.distance();
+      vl53.clearInterrupt();
 
-  // 读取距离数据
-  if (vl53.dataReady()) {
-    int distance = vl53.distance();
-    vl53.clearInterrupt();
+      if (distance == -1) distance = 9999; // 处理无效数据
 
-    if (distance == -1) distance = 9999; // 处理无效数据
-
-    // 发送测距结果到PC
-    sendSensorDataToPC(channel, distance);
-
-    Serial.printf("Manual measurement result: channel %d = %d mm\n", channel, distance);
-
-    // OLED显示测距结果（临时显示）
-    display.clearDisplay();
-    display.setCursor(0, 0);
-    display.printf("Manual Measure");
-    display.setCursor(0, 20);
-    display.printf("Channel: %d", channel);
-    display.setCursor(0, 40);
-    display.printf("Distance: %d mm", distance);
-    display.display();
-    delay(2000); // 显示2秒
-
+      // 发送测距结果到PC
+      sendSensorDataToPC(channel, distance);
+      Serial.printf("[MEASURE] 测距结果: %d mm\n", distance);
+    } else {
+      Serial.println("[MEASURE] 传感器未准备就绪");
+    }
   } else {
-    Serial.println("Sensor not ready for manual measurement");
+    Serial.println("[MEASURE] 无效的方向编号");
   }
 }
 
@@ -292,14 +195,12 @@ void setup() {
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SH110X_WHITE);
+  display.setRotation(0); // 确保屏幕方向正确 (0=正常, 2=180度旋转)
   display.setCursor(0,0);
   display.println("SEBT Host - Wired");
-  display.println("USB + BLE Mode");
+  display.println("USB Mode");
   display.display();
   delay(2000);
-
-  // BLE初始化
-  initBLE();
 
   // 传感器初始化
   display.clearDisplay();
@@ -311,14 +212,25 @@ void setup() {
     tcaSelect(i);
     display.printf("S%d: ", i);
 
-    if (!vl53.begin(0x29, &Wire)) {
-      display.println("FAIL");
-      Serial.printf("Sensor %d init failed\n", i);
-    } else {
-      vl53.startRanging();
-      vl53.setTimingBudget(50); // 高速模式
+    // 尝试初始化传感器，最多重试3次
+    bool sensorOK = false;
+    for (int retry = 0; retry < 3; retry++) {
+      if (vl53.begin(0x29, &Wire)) {
+        vl53.startRanging();
+        vl53.setTimingBudget(50); // 高速模式
+        sensorOK = true;
+        break;
+      }
+      delay(100);
+    }
+
+    if (sensorOK) {
       display.println("OK");
       Serial.printf("Sensor %d ready\n", i);
+    } else {
+      display.println("FAIL");
+      Serial.printf("Sensor %d init failed after 3 retries\n", i);
+      // 即使失败也继续，但会影响该方向的测量
     }
     display.display();
     delay(200);
@@ -330,58 +242,40 @@ void setup() {
   display.setCursor(0, 20);
   display.println("USB: Connected");
   display.setCursor(0, 40);
-  display.println("BLE: Waiting...");
+  display.println("BLE: Optional");
   display.display();
 
   Serial.println("=== SEBT Host Ready ===");
-  Serial.println("Communication channels:");
-  Serial.println("- USB Serial: Connected to PC");
-  Serial.println("- BLE: Waiting for slave connection");
+  Serial.println("Core Features:");
+  Serial.println("- 8-direction distance measurement");
+  Serial.println("- 3-second target locking");
+  Serial.println("- Real-time data upload via USB");
+  Serial.println("- Manual measurement commands");
   Serial.println("========================");
+
+  // 发送启动确认信息到PC
+  Serial.println("[STARTUP] SEBT Host initialization complete");
+  Serial.println("[STARTUP] Ready for distance measurement and data transmission");
 }
 
 void loop() {
-  // --- 0. BLE连接状态管理 ---
-  if (deviceConnected && !oldDeviceConnected) {
-    oldDeviceConnected = deviceConnected;
-    Serial.println("BLE slave connected, ready for data exchange");
-    display.clearDisplay();
-    display.setCursor(0, 0);
-    display.println("System Ready!");
-    display.setCursor(0, 20);
-    display.println("USB: Connected");
-    display.setCursor(0, 40);
-    display.println("BLE: Connected");
-    display.display();
-  }
-
-  if (!deviceConnected && oldDeviceConnected) {
-    oldDeviceConnected = deviceConnected;
-    Serial.println("BLE slave disconnected");
-    display.clearDisplay();
-    display.setCursor(0, 0);
-    display.println("System Ready!");
-    display.setCursor(0, 20);
-    display.println("USB: Connected");
-    display.setCursor(0, 40);
-    display.println("BLE: Waiting...");
-    display.display();
-  }
-
-  // --- 1. 处理来自PC的命令 ---
+  // --- 0. 处理来自PC的命令 ---
   processPCCommand();
 
   // --- 2. 按钮复位逻辑 ---
   if (digitalRead(PIN_BTN) == LOW) {
     isLocked = false;
     lastCandidateIndex = -1;
-    setRGB(deviceConnected ? 0 : 1, deviceConnected ? 1 : 0, 0); // BLE连接时绿灯，否则红灯
+    setRGB(1, 0, 0); // 红灯 (复位状态)
     display.clearDisplay();
     display.setCursor(0, 20);
     display.setTextSize(2);
     display.println("RESET...");
     display.display();
     delay(500);
+
+    // 发送一个测试数据包确认串口通信正常
+    Serial.println("[RESET] 系统复位，串口通信正常");
     return;
   }
 
@@ -397,6 +291,13 @@ void loop() {
       if (d == -1) d = 9999;
       distances[i] = d;
       vl53.clearInterrupt();
+
+      // 调试信息：只在第一次扫描时输出，避免刷屏
+      static bool firstScan = true;
+      if (firstScan && i == 0) {
+        Serial.printf("[SCAN] Direction %d: %d mm\n", i, d);
+        if (i == 7) firstScan = false;
+      }
     }
 
     if (distances[i] > FILTER_MIN_MM && distances[i] < FILTER_MAX_MM) {
@@ -409,12 +310,7 @@ void loop() {
 
   // --- 4. 锁定判断逻辑 ---
   if (!isLocked) {
-    // 根据BLE连接状态设置LED
-    if (deviceConnected) {
-      setRGB(0, 1, 0); // 绿灯 (BLE已连接)
-    } else {
-      setRGB(1, 0, 0); // 红灯 (BLE未连接)
-    }
+    setRGB(1, 0, 0); // 红灯 (扫描中)
 
     if (minIndex != -1) {
       if (minIndex == lastCandidateIndex) {
@@ -424,7 +320,7 @@ void loop() {
 
           // 发送锁定事件到PC
           sendSensorDataToPC(lastCandidateIndex, distances[lastCandidateIndex]);
-          Serial.println("Target locked and data sent to PC");
+          Serial.println("[LOCK] 目标锁定，数据已发送到PC");
         }
       } else {
         lastCandidateIndex = minIndex;
@@ -435,16 +331,22 @@ void loop() {
     }
   }
 
-  // --- 5. 定期发送传感器数据到PC ---
+  // --- 5. 定期发送实时数据到PC (每秒一次) ---
   static unsigned long lastDataSend = 0;
-  if (millis() - lastDataSend >= 1000) { // 每秒发送一次
+  if (millis() - lastDataSend >= 1000) { // 每秒发送一次当前状态
+    // 总是发送数据，即使没有有效目标（用于测试通信）
     if (minIndex != -1) {
       sendSensorDataToPC(minIndex, minDistance);
+      Serial.printf("[DATA] 发送扫描数据 - 方向:%d, 距离:%d mm\n", minIndex, minDistance);
+    } else {
+      // 发送无目标的数据包
+      sendSensorDataToPC(-1, 9999);
+      Serial.println("[DATA] 发送无目标数据包");
     }
     lastDataSend = millis();
   }
 
-  // --- 6. OLED 显示逻辑 ---
+  // --- 5. OLED 显示逻辑 ---
   display.clearDisplay();
 
   if (isLocked) {
@@ -459,42 +361,41 @@ void loop() {
 
     display.setTextSize(3);
     display.setCursor(0, 40);
-    display.print(distances[lastCandidateIndex]);
+    display.print(distances[lastCandidateIndex]); // 实时更新距离
     display.setTextSize(1);
     display.print(" mm");
 
     // 显示连接状态
     display.setCursor(80, 0);
     display.setTextSize(1);
-    if (deviceConnected) {
-      display.println("BLE:OK");
-    } else {
-      display.println("BLE:--");
-    }
+    display.println("USB:OK");
 
   } else {
-    // === 扫描状态 ===
+    // === 扫描状态 (实时显示最近端) ===
     display.setCursor(0, 0);
     display.setTextSize(1);
     display.println("Scanning...");
 
     if (minIndex != -1) {
+      // 实时显示当前的最近方向和距离
       display.setCursor(0, 20);
       display.print("Nearest: ");
-      display.println(DIR_NAMES[minIndex]);
+      display.println(DIR_NAMES[minIndex]); // 实时更新方向
 
       display.setCursor(0, 35);
       display.setTextSize(2);
-      display.print(minDistance);
-      display.print(" mm");
+      display.print(minDistance); display.print(" mm"); // 实时更新数值
 
-      // 显示进度条
+      // 显示进度条 (可视化 3秒 倒计时)
+      // 只有当持续对准同一方向时，进度条才会增长
       if (lastCandidateIndex != -1 && minIndex == lastCandidateIndex) {
         long elapsed = millis() - stableStartTime;
-        int barWidth = map(elapsed, 0, STABLE_TIME_MS, 0, 128);
+        int barWidth = map(elapsed, 0, STABLE_TIME_MS, 0, 128); // 映射到 0-128像素宽度
         if (barWidth > 128) barWidth = 128;
 
+        // 绘制空心框
         display.drawRect(0, 55, 128, 6, SH110X_WHITE);
+        // 绘制实心进度
         display.fillRect(0, 55, barWidth, 6, SH110X_WHITE);
       }
     } else {
@@ -505,11 +406,7 @@ void loop() {
     // 显示连接状态
     display.setCursor(80, 0);
     display.setTextSize(1);
-    if (deviceConnected) {
-      display.println("BLE:OK");
-    } else {
-      display.println("BLE:--");
-    }
+    display.println("USB:OK");
   }
 
   display.display(); // 刷新屏幕

@@ -32,16 +32,29 @@ const gridPositions = [
 
 class SEBTApp {
   constructor() {
+    // 自动锁定相关常量
+    this.AUTO_LOCK_TIME_MS = 3000; // 3秒自动锁定阈值
+
     this.sensorData = new Map();
     this.logs = [];
     this.gridElements = new Map();
     this.localIP = '获取中...';
     this.waitingForManualResult = null;
+    this.lockedDirections = new Set(); // 已锁定的方向集合
+    this.completedDirections = new Set(); // 已完成测距的方向集合
+    this.lastSequence = -1; // 最后处理的序号，避免重复处理
+    this.deviceConnected = false; // 设备连接状态
+    this.simulatedMinDirection = -1; // 模拟数据的最近方向
+
+    // 自动锁定相关变量
+    this.currentMinDirection = -1; // 当前连续最短的方向
+    this.minDirectionStartTime = 0; // 当前最短方向开始的时间
 
     this.initializeApp();
     this.setupEventListeners();
     this.setupGlobalClickListener();
     this.setupIPCListeners();
+    this.updateMockDataButtonState(); // 初始化模拟按钮状态
   }
 
   /**
@@ -108,6 +121,20 @@ class SEBTApp {
   onDirectionCardClick(channel, direction) {
     console.log(`📍 点击方向: ${direction.displayName} (通道: ${channel})`);
 
+    // 检查是否已完成测距
+    if (this.completedDirections.has(channel)) {
+      console.log('方向已完成测距，无需操作');
+      return;
+    }
+
+    // 检查是否已锁定（只有锁定的方向才能进行手动测距）
+    const canMeasure = this.lockedDirections.has(channel);
+
+    if (!canMeasure) {
+      console.log('方向未锁定，无法进行手动测距');
+      return;
+    }
+
     // 隐藏所有手动测距按钮
     document.querySelectorAll('.manual-measure-btn').forEach(btn => {
       btn.style.display = 'none';
@@ -121,6 +148,7 @@ class SEBTApp {
     // 显示当前卡片的测距按钮
     const measureBtn = document.getElementById(`measure-${direction.code}`);
     if (measureBtn) {
+      measureBtn.textContent = '开始测距';
       measureBtn.style.display = 'block';
 
       // 添加点击事件监听器
@@ -143,9 +171,14 @@ class SEBTApp {
   performManualMeasurement(channel, direction) {
     console.log(`🎯 执行手动测距: ${direction.displayName}`);
 
-    // 发送测距命令到ESP32
-    const command = `MEASURE:${channel}`;
-    this.sendCommandToESP32(command);
+    // 如果有真实设备连接，发送命令到ESP32
+    if (this.deviceConnected) {
+      const command = `MEASURE:${channel}`;
+      this.sendCommandToESP32(command);
+    } else {
+      // 模拟模式：直接模拟测距结果
+      console.log('🎲 模拟测距模式');
+    }
 
     // 添加日志
     this.addLog(`📏 手动测距: ${direction.displayName}`, 'info');
@@ -153,14 +186,25 @@ class SEBTApp {
     // 设置标志，表示正在等待手动测距结果
     this.waitingForManualResult = { channel, direction };
 
-    // 3秒后如果还没收到结果，清除等待状态
+    // 隐藏测距按钮，显示正在测距
+    const measureBtn = document.getElementById(`measure-${direction.code}`);
+    if (measureBtn) {
+      measureBtn.textContent = '测距中...';
+      measureBtn.disabled = true;
+    }
+
+    // 模拟或真实测距的延迟处理
+    const delayTime = this.deviceConnected ? 3000 : 1000; // 模拟模式更快
+
     setTimeout(() => {
       if (this.waitingForManualResult && this.waitingForManualResult.channel === channel) {
-        console.log('手动测距超时');
-        this.addLog(`⏰ 手动测距超时: ${direction.displayName}`, 'warning');
-        this.waitingForManualResult = null;
+        // 模拟测距结果
+        const mockDistance = Math.floor(Math.random() * 100) + 30; // 30-130mm
+        console.log(`🎲 模拟测距完成: ${direction.displayName} = ${mockDistance}mm`);
+
+        this.handleManualMeasurementResult(channel, mockDistance, direction);
       }
-    }, 3000);
+    }, delayTime);
   }
 
   /**
@@ -169,14 +213,106 @@ class SEBTApp {
   handleManualMeasurementResult(channel, distance, direction) {
     console.log(`📊 手动测距结果: ${direction.displayName} = ${distance}mm`);
 
-    // 更新界面显示
-    this.updateSensorData(channel, distance, Date.now());
+    // 完成这个方向的测距
+    this.completeDirection(channel, distance);
 
     // 添加日志
-    this.addLog(`📐 测距完成: ${direction.displayName} - ${distance}mm`, 'success');
+    this.addLog(`📐 手动测距完成: ${direction.displayName} - ${distance}mm`, 'success');
+  }
 
-    // 高亮显示结果
-    this.highlightClosestDirection(channel);
+  /**
+   * 锁定指定方向（等待手动测距）
+   */
+  lockDirection(channel, distance) {
+    if (this.lockedDirections.has(channel) || this.completedDirections.has(channel)) {
+      return; // 已经锁定或完成
+    }
+
+    // 添加到锁定集合
+    this.lockedDirections.add(channel);
+
+    // 更新UI显示锁定状态（橙色，表示等待测距）
+    const gridElement = this.gridElements.get(channel);
+    if (gridElement) {
+      gridElement.classList.add('locked');
+      gridElement.classList.remove('active', 'min-distance');
+
+      // 更新距离显示
+      const distanceElement = gridElement.querySelector('.distance-display');
+      if (distanceElement) {
+        distanceElement.textContent = `${distance} mm`;
+        distanceElement.style.color = '#f59e0b'; // 橙色表示锁定等待测距
+      }
+
+      // 显示手动测距按钮（因为这是锁定的方向）
+      const measureBtn = gridElement.querySelector('.manual-measure-btn');
+      if (measureBtn) {
+        measureBtn.textContent = '开始测距';
+        measureBtn.style.display = 'block';
+      }
+    }
+
+    console.log(`🔒 方向已锁定，等待手动测距: ${directionMap[channel].displayName}`);
+
+    // 更新按钮状态
+    this.updateMockDataButtonState();
+  }
+
+  /**
+   * 完成指定方向的测距
+   */
+  completeDirection(channel, distance) {
+    if (this.completedDirections.has(channel)) {
+      return; // 已经完成
+    }
+
+    // 从锁定状态移除，添加到完成状态
+    this.lockedDirections.delete(channel);
+    this.completedDirections.add(channel);
+
+    // 更新UI显示完成状态（灰色，不可更改）
+    const gridElement = this.gridElements.get(channel);
+    if (gridElement) {
+      gridElement.classList.remove('locked', 'active', 'min-distance', 'selected');
+      gridElement.classList.add('completed');
+
+      // 更新距离显示
+      const distanceElement = gridElement.querySelector('.distance-display');
+      if (distanceElement) {
+        distanceElement.textContent = `${distance} mm`;
+        distanceElement.style.color = '#6b7280'; // 灰色表示已完成
+      }
+
+      // 隐藏手动测距按钮
+      const measureBtn = gridElement.querySelector('.manual-measure-btn');
+      if (measureBtn) {
+        measureBtn.style.display = 'none';
+      }
+    }
+
+    console.log(`✅ 方向测距完成: ${directionMap[channel].displayName} = ${distance}mm`);
+
+    // 更新按钮状态
+    this.updateMockDataButtonState();
+
+    // 检查是否所有方向都已完成
+    this.checkExperimentCompletion();
+  }
+
+  /**
+   * 检查实验是否完成
+   */
+  checkExperimentCompletion() {
+    if (this.completedDirections.size === 8) {
+      console.log('🎉 实验完成！所有8个方向都已测距完毕');
+      this.addLog('🎉 实验完成！所有方向测距完毕', 'success');
+
+      // 可以在这里添加完成后的处理逻辑
+      // 比如显示完成弹窗、保存结果等
+      setTimeout(() => {
+        alert('🎉 平衡测试实验完成！\n所有8个方向的测距都已完成。');
+      }, 500);
+    }
   }
 
   /**
@@ -254,6 +390,18 @@ class SEBTApp {
       mockDataBtn.addEventListener('click', () => this.simulateSensorData());
     }
 
+    // 模拟锁定按钮
+    const mockLockBtn = document.getElementById('mock-lock-btn');
+    if (mockLockBtn) {
+      mockLockBtn.addEventListener('click', () => this.simulateLock());
+    }
+
+    // 重置锁定状态按钮
+    const resetLockedBtn = document.getElementById('reset-locked-btn');
+    if (resetLockedBtn) {
+      resetLockedBtn.addEventListener('click', () => this.resetLockedDirections());
+    }
+
     // 清空日志按钮
     const clearLogsBtn = document.getElementById('clear-logs-btn');
     if (clearLogsBtn) {
@@ -301,12 +449,24 @@ class SEBTApp {
     // 监听串口连接状态
     ipcRenderer.on('serial-connected', (event, info) => {
       console.log('🔌 串口已连接:', info);
+      this.deviceConnected = true;
       this.updateSerialStatus(true, info);
+      this.updateMockDataButtonState();
     });
 
     ipcRenderer.on('serial-disconnected', (event) => {
       console.log('🔌 串口已断开');
+      this.deviceConnected = false;
       this.updateSerialStatus(false);
+      this.updateMockDataButtonState();
+
+      // 清除模拟数据和高亮状态
+      this.simulatedMinDirection = -1;
+
+      // 重置自动锁定状态
+      this.currentMinDirection = -1;
+      this.minDirectionStartTime = 0;
+      this.clearAllHighlights();
     });
 
     // 监听串口传感器数据
@@ -320,53 +480,52 @@ class SEBTApp {
    * 处理串口传感器数据
    */
   handleSerialData(data) {
-    const { direction, directionName, distance, locked, timestamp } = data;
+    const { sequence, timestamp, distances, currentMinDirection, currentMinDistance, isLocked } = data;
 
-    // 将方向名称转换为方向代码 (如果有的话)
-    let directionCode = direction;
-    if (directionName) {
-      // 从directionMap中找到对应的代码
-      for (const [ch, dir] of Object.entries(directionMap)) {
-        if (dir.name === directionName) {
-          directionCode = dir.code;
-          break;
+    // 检查序号，避免重复处理
+    if (sequence <= this.lastSequence) {
+      console.log(`📊 跳过重复数据包 #${sequence}`);
+      return; // 跳过已处理的数据包
+    }
+    this.lastSequence = sequence;
+
+    console.log(`📊 处理数据包 #${sequence}:`, {
+      currentMinDirection,
+      currentMinDistance,
+      isLocked,
+      distances: distances.slice(0, 8) // 只显示前8个
+    });
+
+    // 更新所有8个方向的距离数据（跳过已锁定和已完成的方向）
+    // 对于真实数据，更新所有未完成的方向；对于模拟数据，也更新所有未完成的方向
+    for (let channel = 0; channel < 8; channel++) {
+      const shouldUpdate = !this.lockedDirections.has(channel) &&
+                          !this.completedDirections.has(channel);
+
+      if (shouldUpdate) {
+        // 只更新未锁定且未完成的有效方向
+        const distance = distances[channel];
+        if (distance > 0 && distance < 9999) { // 有效距离
+          this.updateSensorData(channel, distance, timestamp);
         }
       }
     }
 
-    // 根据方向代码找到对应的通道号
-    let channel = -1;
-    for (const [ch, dir] of Object.entries(directionMap)) {
-      if (dir.code === directionCode) {
-        channel = parseInt(ch);
-        break;
+    // 处理锁定状态（来自ESP32的锁定）
+    if (isLocked) {
+      // 锁定当前最小距离的方向
+      if (!this.lockedDirections.has(currentMinDirection)) {
+        this.lockDirection(currentMinDirection, currentMinDistance);
+        console.log(`🔒 ESP32锁定: ${directionMap[currentMinDirection].displayName} - ${currentMinDistance}mm`);
+        this.addLog(`🔒 ESP32锁定: ${directionMap[currentMinDirection].displayName} - ${currentMinDistance}mm`, 'success');
       }
+    } else if (this.deviceConnected) {
+      // ESP32未锁定，前端进行自动锁定检查
+      this.checkAutoLock(currentMinDirection, currentMinDistance);
     }
 
-    if (channel === -1) {
-      console.warn('无法识别的方向:', directionCode);
-      return;
-    }
-
-    // 检查是否是手动测距的结果
-    if (this.waitingForManualResult && this.waitingForManualResult.channel === channel) {
-      // 这是手动测距的结果
-      this.handleManualMeasurementResult(channel, distance, this.waitingForManualResult.direction);
-      this.waitingForManualResult = null;
-      return; // 不继续处理常规传感器数据更新
-    }
-
-    // 更新传感器数据
-    this.updateSensorData(channel, distance, timestamp);
-
-    // 如果是锁定事件，添加特殊标记
-    if (locked) {
-      console.log(`🎯 串口锁定事件: ${directionName || directionCode} - ${distance}mm`);
-      this.addLog(`🔒 串口锁定: ${directionName || directionCode} - ${distance}mm`, 'success');
-    }
-
-    // 高亮最近方向
-    this.highlightClosestDirection(channel);
+    // 高亮当前最近方向（排除已完成测距的方向）
+    this.highlightClosestDirection(distances);
   }
 
   /**
@@ -393,40 +552,127 @@ class SEBTApp {
   }
 
   /**
+   * 模拟锁定功能
+   */
+  simulateLock() {
+    console.log('🔒 模拟锁定功能');
+
+    // 只有在设备未连接时才能使用模拟锁定
+    if (this.deviceConnected) {
+      console.log('❌ 设备已连接，无法使用模拟锁定');
+      return;
+    }
+
+    // 检查是否已经有锁定方向（模拟模式下只允许锁定一个方向）
+    if (this.lockedDirections.size > 0) {
+      console.log('❌ 已有方向被锁定，无法重复锁定');
+      return;
+    }
+
+    // 找到当前高亮的方向，或者随机选择一个未完成的方向
+    let directionToLock = -1;
+
+    // 首先检查是否有当前高亮的方向
+    for (let channel = 0; channel < 8; channel++) {
+      const element = this.gridElements.get(channel);
+      if (element && element.classList.contains('min-distance')) {
+        directionToLock = channel;
+        break;
+      }
+    }
+
+    // 如果没有高亮方向，随机选择一个未完成的方向
+    if (directionToLock === -1) {
+      const availableChannels = [];
+      for (let channel = 0; channel < 8; channel++) {
+        if (!this.completedDirections.has(channel)) {
+          availableChannels.push(channel);
+        }
+      }
+
+      if (availableChannels.length > 0) {
+        directionToLock = availableChannels[Math.floor(Math.random() * availableChannels.length)];
+      } else {
+        console.log('ℹ️ 所有方向都已完成，无法模拟锁定');
+        return;
+      }
+    }
+
+    // 获取当前距离数据
+    const sensorData = this.sensorData.get(directionToLock);
+    const currentDistance = sensorData ? sensorData.distance : Math.floor(Math.random() * 100) + 50;
+
+    // 锁定这个方向
+    this.lockDirection(directionToLock, currentDistance);
+
+    console.log(`🔒 模拟锁定方向: ${directionMap[directionToLock].displayName} - ${currentDistance}mm`);
+    this.addLog(`🔒 模拟锁定: ${directionMap[directionToLock].displayName} - ${currentDistance}mm`, 'success');
+  }
+
+  /**
    * 模拟传感器数据 (同时更新所有8个方向)
    */
   simulateSensorData() {
-    console.log('🎲 模拟所有8个方向的传感器数据');
+    console.log('🎲 生成模拟传感器数据包');
 
-    // 找到一个随机的最小距离方向
-    const channels = Object.keys(directionMap).map(ch => parseInt(ch));
-    const minDistanceChannel = channels[Math.floor(Math.random() * channels.length)];
+    // 生成8个方向的距离数据
+    const distances = [];
+    let minDistance = 9999;
+    let minDirection = -1;
 
-    // 为所有8个方向生成随机距离数据
-    channels.forEach(channel => {
-      // 生成随机距离 (50-2000mm)
-      let randomDistance = Math.floor(Math.random() * 1950) + 50;
+    // 为所有8个方向生成距离（包括已完成的方向，但已完成的方向使用固定值）
+    for (let channel = 0; channel < 8; channel++) {
+      let distance;
 
-      // 确保最小距离方向有最小的读数
-      if (channel === minDistanceChannel) {
-        randomDistance = Math.floor(Math.random() * 100) + 30; // 30-130mm，更小的距离
+      if (this.completedDirections.has(channel)) {
+        // 已完成的方向使用固定的历史读数
+        const sensorData = this.sensorData.get(channel);
+        distance = sensorData ? sensorData.distance : 9999;
+      } else {
+        // 未完成的方向生成随机距离
+        distance = Math.floor(Math.random() * 1950) + 50; // 50-2000mm
       }
 
-      // 模拟实时数据更新
-      this.updateRealtimeSensorData(channel, randomDistance, channel === minDistanceChannel);
-    });
+      distances.push(distance);
+
+      // 找到未完成方向中的最小距离
+      if (!this.completedDirections.has(channel) && distance < minDistance) {
+        minDistance = distance;
+        minDirection = channel;
+      }
+    }
+
+    // 如果没有找到最小方向（所有方向都已完成），设置默认值
+    if (minDirection === -1) {
+      minDirection = 0;
+      minDistance = distances[0] || 9999;
+    }
+
+    // 构造与真实数据相同格式的数据包
+    const mockData = {
+      sequence: this.lastSequence + 1, // 模拟递增的序列号
+      timestamp: Date.now(),
+      distances: distances, // 8个方向的距离数组
+      currentMinDirection: minDirection,
+      currentMinDistance: minDistance,
+      isLocked: false // 模拟数据默认不锁定
+    };
+
+    console.log('📤 发送模拟数据包:', mockData);
+
+    // 通过相同的处理流程处理模拟数据（就像从端口传入一样）
+    this.handleSerialData(mockData);
 
     // 添加日志记录
-    const minDirection = directionMap[minDistanceChannel];
+    const minDir = directionMap[minDirection];
     this.addLog({
       id: Date.now(),
-      timestamp: Date.now(),
-      channel: minDistanceChannel,
-      code: minDirection.code,
-      displayName: minDirection.displayName,
-      distance: 0, // 模拟数据不显示具体距离
+      type: 'sensor',
+      direction: minDir.code,
+      distance: minDistance,
       source: 'simulated',
-      message: `🎲 模拟数据更新完成，最小距离: ${minDirection.displayName}`
+      timestamp: Date.now(),
+      message: `模拟数据包 - 最近方向: ${minDir.displayName} (${minDistance}mm)`
     });
   }
 
@@ -434,6 +680,11 @@ class SEBTApp {
    * 更新传感器数据
    */
   updateSensorData(channel, distance, source = 'simulated') {
+    // 已完成测距的方向不应该被更新
+    if (this.completedDirections.has(channel)) {
+      return;
+    }
+
     if (!directionMap[channel]) {
       console.error(`无效的通道: ${channel}`);
       return;
@@ -453,17 +704,27 @@ class SEBTApp {
 
     this.sensorData.set(channel, sensorData);
 
-    // 更新UI
-    this.updateSensorDisplay(channel, sensorData);
+    // 更新UI - 模拟数据不设置为活跃状态，避免虚假的高亮
+    if (source === 'hardware') {
+      // 只有硬件数据才设置为活跃状态
+      sensorData.active = true;
+
+      // 更新UI
+      this.updateSensorDisplay(channel, sensorData);
+
+      // 3秒后重置为非活跃状态
+      setTimeout(() => {
+        sensorData.active = false;
+        this.updateSensorDisplay(channel, sensorData);
+      }, 3000);
+    } else {
+      // 模拟数据直接更新UI，不设置活跃状态
+      sensorData.active = false;
+      this.updateSensorDisplay(channel, sensorData);
+    }
 
     // 添加日志
     this.addLog(sensorData);
-
-    // 3秒后重置为非活跃状态
-    setTimeout(() => {
-      sensorData.active = false;
-      this.updateSensorDisplay(channel, sensorData);
-    }, 3000);
   }
 
   /**
@@ -517,6 +778,11 @@ class SEBTApp {
    * 更新实时传感器数据
    */
   updateRealtimeSensorData(channel, distance, isMinDistance) {
+    // 已完成测距的方向不应该被更新
+    if (this.completedDirections.has(channel)) {
+      return;
+    }
+
     const direction = directionMap[channel];
     if (!direction) return;
 
@@ -538,8 +804,7 @@ class SEBTApp {
     // 更新UI显示
     this.updateRealtimeSensorDisplay(channel, sensorData, isMinDistance);
 
-    // 高亮最小距离的方向
-    this.updateMinDistanceHighlight();
+    // 高亮逻辑现在由highlightClosestDirection统一管理，不在这里重复调用
   }
 
   /**
@@ -628,8 +893,8 @@ class SEBTApp {
       distanceElement.style.color = '#10b981'; // 绿色 (锁定状态)
     } else {
       gridElement.classList.remove('active');
-      // 恢复到实时数据状态
-      this.updateMinDistanceHighlight();
+      // 恢复到默认颜色，具体的方向高亮由highlightClosestDirection统一管理
+      distanceElement.style.color = '#3b82f6'; // 默认蓝色
     }
   }
 
@@ -758,6 +1023,184 @@ class SEBTApp {
 
     // 滚动到底部
     logsContainer.scrollTop = logsContainer.scrollHeight;
+  }
+
+  /**
+   * 检查并执行自动锁定
+   */
+  checkAutoLock(currentMinDirection, currentMinDistance) {
+    const now = Date.now();
+
+    // 检查方向是否改变
+    if (this.currentMinDirection !== currentMinDirection) {
+      // 方向改变，重置计时器
+      this.currentMinDirection = currentMinDirection;
+      this.minDirectionStartTime = now;
+      console.log(`🔄 最短方向改变为: ${directionMap[currentMinDirection].displayName}，开始计时`);
+      return;
+    }
+
+    // 检查是否已经锁定或已完成
+    if (this.lockedDirections.has(currentMinDirection) || this.completedDirections.has(currentMinDirection)) {
+      return;
+    }
+
+    // 检查持续时间
+    const duration = now - this.minDirectionStartTime;
+    if (duration >= this.AUTO_LOCK_TIME_MS) {
+      // 自动锁定
+      this.lockDirection(currentMinDirection, currentMinDistance);
+      console.log(`🔒 前端自动锁定: ${directionMap[currentMinDirection].displayName} - ${currentMinDistance}mm (持续${duration}ms)`);
+      this.addLog(`🔒 前端自动锁定: ${directionMap[currentMinDirection].displayName} - ${currentMinDistance}mm`, 'success');
+    } else {
+      console.log(`⏱️ 方向锁定倒计时: ${directionMap[currentMinDirection].displayName} (${Math.round(duration/1000)}/${this.AUTO_LOCK_TIME_MS/1000}s)`);
+    }
+  }
+
+  /**
+   * 清除所有高亮状态
+   */
+  clearAllHighlights() {
+    this.gridElements.forEach((element) => {
+      element.classList.remove('active', 'min-distance');
+    });
+  }
+
+  /**
+   * 高亮最近方向（排除已完成测距的方向）
+   */
+  highlightClosestDirection(distances) {
+    // 清除所有高亮
+    this.gridElements.forEach((element) => {
+      element.classList.remove('min-distance');
+    });
+
+    // 从所有方向中找到未完成测距的方向中距离最短的一个
+    let closestChannel = -1;
+    let closestDistance = 9999;
+
+    for (let channel = 0; channel < 8; channel++) {
+      // 只考虑未完成测距的方向
+      if (!this.completedDirections.has(channel)) {
+        const distance = distances[channel];
+        if (distance > 0 && distance < 9999 && distance < closestDistance) {
+          closestDistance = distance;
+          closestChannel = channel;
+        }
+      }
+    }
+
+    // 高亮找到的最短距离方向
+    if (closestChannel >= 0) {
+      const targetElement = this.gridElements.get(closestChannel);
+      if (targetElement) {
+        targetElement.classList.add('min-distance');
+        console.log(`🎯 高亮最近方向: ${directionMap[closestChannel].displayName} (${closestDistance}mm)`);
+      }
+    } else {
+      console.log('ℹ️ 没有可高亮的方向（所有方向都已完成测距）');
+    }
+  }
+
+  /**
+   * 更新模拟数据按钮状态
+   */
+  updateMockDataButtonState() {
+    const mockDataBtn = document.getElementById('mock-data-btn');
+    const mockLockBtn = document.getElementById('mock-lock-btn');
+
+    if (this.deviceConnected) {
+      // 设备已连接时，禁用所有模拟按钮
+      if (mockDataBtn) {
+        mockDataBtn.disabled = true;
+        mockDataBtn.textContent = '设备已连接';
+        mockDataBtn.style.opacity = '0.5';
+      }
+      if (mockLockBtn) {
+        mockLockBtn.disabled = true;
+        mockLockBtn.textContent = '设备已连接';
+        mockLockBtn.style.opacity = '0.5';
+      }
+    } else {
+      // 设备未连接时，根据锁定状态控制按钮
+      const hasLockedDirections = this.lockedDirections.size > 0;
+
+      // 模拟数据按钮：有锁定方向时禁用
+      if (mockDataBtn) {
+        if (hasLockedDirections) {
+          mockDataBtn.disabled = true;
+          mockDataBtn.textContent = '请先完成测距';
+          mockDataBtn.style.opacity = '0.5';
+        } else {
+          mockDataBtn.disabled = false;
+          mockDataBtn.textContent = '模拟8方向数据';
+          mockDataBtn.style.opacity = '1';
+        }
+      }
+
+      // 模拟锁定按钮：有锁定方向时禁用
+      if (mockLockBtn) {
+        if (hasLockedDirections) {
+          mockLockBtn.disabled = true;
+          mockLockBtn.textContent = '已有锁定方向';
+          mockLockBtn.style.opacity = '0.5';
+        } else {
+          mockLockBtn.disabled = false;
+          mockLockBtn.textContent = '模拟锁定';
+          mockLockBtn.style.opacity = '1';
+        }
+      }
+    }
+  }
+
+  /**
+   * 重置所有锁定和完成状态
+   */
+  resetLockedDirections() {
+    console.log('🔄 重置所有锁定和完成状态');
+
+    // 清除锁定和完成集合
+    this.lockedDirections.clear();
+    this.completedDirections.clear();
+    this.simulatedMinDirection = -1; // 重置模拟数据状态
+
+    // 重置自动锁定状态
+    this.currentMinDirection = -1;
+    this.minDirectionStartTime = 0;
+
+    // 重置所有卡片的UI状态
+    this.gridElements.forEach((element, channel) => {
+      element.classList.remove('locked', 'selected', 'active', 'min-distance', 'completed');
+
+      // 隐藏手动测距按钮
+      const measureBtn = element.querySelector('.manual-measure-btn');
+      if (measureBtn) {
+        measureBtn.style.display = 'none';
+        measureBtn.disabled = false;
+        measureBtn.textContent = '开始测距';
+      }
+
+      // 重置距离显示
+      const distanceElement = element.querySelector('.distance-display');
+      if (distanceElement) {
+        distanceElement.textContent = '--- mm';
+        distanceElement.style.color = '#6b7280'; // 默认灰色
+      }
+    });
+
+    // 清除等待状态
+    if (this.waitingForManualResult) {
+      this.waitingForManualResult = null;
+    }
+
+    // 发送重置命令到ESP32
+    this.sendCommandToESP32('RESET');
+
+    // 更新按钮状态
+    this.updateMockDataButtonState();
+
+    // 添加日志
+    this.addLog('🔄 系统重置，所有锁定和完成状态已清除', 'info');
   }
 
   /**
