@@ -30,6 +30,7 @@
             display: flex;
             flex-direction: column;
             padding: 20px;
+            position: relative; /* 为header-info提供相对定位基准 */
         }
 
         .header {
@@ -54,26 +55,103 @@
             top: 20px;
             right: 20px;
             display: flex;
-            gap: 15px;
-            align-items: center;
+            flex-direction: column; /* 纵向排列 */
+            gap: 4px; /* 标签间距 */
+            align-items: flex-end; /* 右对齐 */
+            z-index: 10; /* 确保在侧边栏之上 */
+        }
+
+        .ip-display,
+        .server-status,
+        .udp-status,
+        .status-item {
+            font-size: 0.75rem;
+            padding: 4px 8px;
+            border-radius: 4px;
+            white-space: nowrap;
+            flex-shrink: 0;
+            width: 140px; /* 统一固定宽度 */
+            text-align: center; /* 居中对齐 */
+            box-sizing: border-box; /* 确保padding不影响宽度 */
         }
 
         .ip-display {
-            font-size: 0.875rem;
             color: #059669;
             background: #f0fdf4;
-            padding: 4px 8px;
-            border-radius: 4px;
             border: 1px solid #bbf7d0;
         }
 
         .server-status {
-            font-size: 0.875rem;
             color: #0891b2;
             background: #ecfeff;
-            padding: 4px 8px;
-            border-radius: 4px;
             border: 1px solid #a5f3fc;
+        }
+
+        .udp-status {
+            color: #dc2626;
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            min-width: 80px; /* 确保UDP状态有最小宽度 */
+        }
+
+        .udp-status.connected {
+            color: #16a34a;
+            background: #f0fdf4;
+            border-color: #bbf7d0;
+        }
+
+        .udp-status.searching {
+            color: #d97706;
+            background: #fffbeb;
+            border-color: #fde68a;
+        }
+
+        .status-item {
+            color: #dc2626;
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            min-width: 100px;
+        }
+
+        .status-item.status-connected {
+            color: #16a34a;
+            background: #f0fdf4;
+            border-color: #bbf7d0;
+        }
+
+        .status-item.status-disconnected {
+            color: #dc2626;
+            background: #fef2f2;
+            border-color: #fecaca;
+        }
+
+        /* 手动测距按钮样式 */
+        .manual-measure-btn {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #3b82f6;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            padding: 6px 12px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            cursor: pointer;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            transition: background-color 0.2s;
+            z-index: 2; /* 确保在卡片内容之上 */
+        }
+
+        .manual-measure-btn:hover {
+            background: #2563eb;
+        }
+
+        /* 选中状态样式 */
+        .grid-item.selected {
+            border-color: #3b82f6;
+            box-shadow: 0 0 8px rgba(59, 130, 246, 0.3);
         }
 
         /* 网格容器 */
@@ -105,6 +183,7 @@
             padding: 20px;
             transition: all 0.3s ease;
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+            position: relative; /* 为绝对定位的按钮提供定位基准 */
             cursor: pointer;
         }
 
@@ -123,6 +202,12 @@
             border-color: #10b981;
             background: #f0fdf4;
             box-shadow: 0 0 20px rgba(16, 185, 129, 0.2);
+        }
+
+        .grid-item.min-distance {
+            border-color: #059669;
+            background: #ecfdf5;
+            box-shadow: 0 4px 16px rgba(5, 150, 105, 0.15);
         }
 
         /* 方位标签 */
@@ -172,6 +257,8 @@
         .sidebar-header {
             padding: 20px;
             border-bottom: 1px solid #e2e8f0;
+            position: relative;
+            z-index: 5; /* 低于header-info但高于其他内容 */
         }
 
         .sidebar-header h2 {
@@ -281,8 +368,10 @@
         <div class="main-content">
             <div class="header">
                 <h1>SEBT 平衡测试系统</h1>
-                <p>实时监测平衡测试数据</p>
+                <p>监测平衡测试数据</p>
                 <div class="header-info">
+                    <div id="serial-status" class="status-item">🔌 串口: 未连接</div>
+                    <div id="udp-status" class="udp-status">📡 UDP: 等待连接</div>
                     <div id="local-ip" class="ip-display">IP: 获取中...</div>
                     <div class="server-status">🔗 服务运行中</div>
                 </div>
@@ -299,7 +388,7 @@
         <!-- 侧边栏 -->
         <div class="sidebar">
             <div class="sidebar-header">
-                <h2>实时数据日志</h2>
+                <h2>数据日志</h2>
             </div>
 
             <div class="logs-container" id="logs-container">
@@ -310,7 +399,7 @@
             </div>
 
             <div class="controls">
-                <button class="control-button" id="mock-data-btn">模拟数据</button>
+                <button class="control-button" id="mock-data-btn">模拟8方向数据</button>
                 <button class="control-button secondary" id="clear-logs-btn">清空日志</button>
             </div>
         </div>
