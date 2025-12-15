@@ -38,12 +38,18 @@ class SEBTApp {
     this.sensorData = new Map();
     this.logs = [];
     this.gridElements = new Map();
-    this.localIP = '获取中...';
     this.waitingForManualResult = null;
+    this.bluetoothMeasurementCollection = null; // 蓝牙测距数据收集状态
     this.lockedDirections = new Set(); // 已锁定的方向集合
     this.completedDirections = new Set(); // 已完成测距的方向集合
     this.lastSequence = -1; // 最后处理的序号，避免重复处理
-    this.deviceConnected = false; // 设备连接状态
+    this.bleConnected = false; // 主机BLE连接状态
+    this.slaveDeviceConnected = false; // 从机连接状态
+    this.hostDevice = null;
+    this.slaveDevice = null;
+    this.bleTarget = 'host'; // 当前弹窗目标：host|slave
+    this.bleIPCHandlersSetup = false; // BLE IPC监听器是否已设置
+    this.bleDiagnosing = false; // 是否正在进行BLE诊断
     this.simulatedMinDirection = -1; // 模拟数据的最近方向
 
     // 自动锁定相关变量
@@ -55,6 +61,8 @@ class SEBTApp {
     this.setupGlobalClickListener();
     this.setupIPCListeners();
     this.updateMockDataButtonState(); // 初始化模拟按钮状态
+    this.updateBluetoothStatus({ connected: false, text: '📡 主机BLE: 未连接', class: 'disconnected' });
+    this.updateSlaveBLEStatus({ connected: false, text: '🦶 从机BLE: 未连接', class: 'disconnected' });
   }
 
   /**
@@ -169,19 +177,7 @@ class SEBTApp {
    * 执行手动测距
    */
   performManualMeasurement(channel, direction) {
-    console.log(`🎯 执行手动测距: ${direction.displayName}`);
-
-    // 如果有真实设备连接，发送命令到ESP32
-    if (this.deviceConnected) {
-      const command = `MEASURE:${channel}`;
-      this.sendCommandToESP32(command);
-    } else {
-      // 模拟模式：直接模拟测距结果
-      console.log('🎲 模拟测距模式');
-    }
-
-    // 添加日志
-    this.addLog(`📏 手动测距: ${direction.displayName}`, 'info');
+    console.log(`🎯 执行手动测距: ${direction.displayName} (通道: ${channel})`);
 
     // 设置标志，表示正在等待手动测距结果
     this.waitingForManualResult = { channel, direction };
@@ -193,18 +189,31 @@ class SEBTApp {
       measureBtn.disabled = true;
     }
 
-    // 模拟或真实测距的延迟处理
-    const delayTime = this.deviceConnected ? 3000 : 1000; // 模拟模式更快
+    // 添加日志
+    this.addLog(`📏 手动测距: ${direction.displayName}`, 'info');
 
-    setTimeout(() => {
-      if (this.waitingForManualResult && this.waitingForManualResult.channel === channel) {
-        // 模拟测距结果
-        const mockDistance = Math.floor(Math.random() * 100) + 30; // 30-130mm
-        console.log(`🎲 模拟测距完成: ${direction.displayName} = ${mockDistance}mm`);
+    // 检查蓝牙连接状态
+    if (this.bleConnected) {
+      // 蓝牙连接模式：收集最近3次对应方向的距离数据并计算平均值
+      console.log('📊 蓝牙测距模式 - 收集最近3次距离数据计算平均值');
 
-        this.handleManualMeasurementResult(channel, mockDistance, direction);
-      }
-    }, delayTime);
+      // 开始收集距离数据
+      this.startBluetoothMeasurementCollection(channel, direction);
+
+    } else {
+      // 模拟模式：直接模拟测距结果
+      console.log('🎲 模拟测距模式');
+
+      setTimeout(() => {
+        if (this.waitingForManualResult && this.waitingForManualResult.channel === channel) {
+          // 模拟测距结果
+          const mockDistance = Math.floor(Math.random() * 100) + 30; // 30-130mm
+          console.log(`🎲 模拟测距完成: ${direction.displayName} = ${mockDistance}mm`);
+
+          this.handleManualMeasurementResult(channel, mockDistance, direction);
+        }
+      }, 1000);
+    }
   }
 
   /**
@@ -269,6 +278,13 @@ class SEBTApp {
     // 从锁定状态移除，添加到完成状态
     this.lockedDirections.delete(channel);
     this.completedDirections.add(channel);
+
+    // 如果蓝牙已连接，发送测距完成命令给硬件端
+    if (this.bleConnected) {
+      const command = `MEASURE:${channel}`;
+      console.log(`📡 发送测距完成命令给硬件端: ${command}`);
+      this.sendBluetoothCommand(command);
+    }
 
     // 更新UI显示完成状态（灰色，不可更改）
     const gridElement = this.gridElements.get(channel);
@@ -396,6 +412,24 @@ class SEBTApp {
       mockLockBtn.addEventListener('click', () => this.simulateLock());
     }
 
+    // 主机BLE按钮
+    const hostBtn = document.getElementById('bluetooth-status');
+    if (hostBtn) {
+      hostBtn.addEventListener('click', () => {
+        this.bleTarget = 'host';
+        this.showBluetoothDeviceModal();
+      });
+    }
+
+    // 从机BLE按钮（复用样式）
+    const slaveBtn = document.getElementById('slave-status');
+    if (slaveBtn) {
+      slaveBtn.addEventListener('click', () => {
+        this.bleTarget = 'slave';
+        this.showBluetoothDeviceModal();
+      });
+    }
+
     // 重置锁定状态按钮
     const resetLockedBtn = document.getElementById('reset-locked-btn');
     if (resetLockedBtn) {
@@ -427,83 +461,72 @@ class SEBTApp {
       this.handleRealtimeData(data);
     });
 
-    // 监听本地IP地址
-    ipcRenderer.on('local-ip', (event, ip) => {
-      console.log('🏠 本机IP:', ip);
-      this.localIP = ip;
-      this.updateIPDisplay();
+    // 监听蓝牙连接状态（用于区分主机/从机）
+    ipcRenderer.on('bluetooth-status', (event, status) => {
+      console.log('📱 BLE状态更新:', status);
+      const name = status?.device?.name || '';
+      const upper = name.toUpperCase();
+      const role = upper.includes('SLAVE') || upper.includes('FSR') ? 'slave' : 'host';
+      if (role === 'slave') {
+        this.updateSlaveBLEStatus(status);
+      } else {
+        this.updateBluetoothStatus(status);
+      }
     });
 
-    // 监听UDP连接状态
-    ipcRenderer.on('udp-status', (event, status) => {
-      console.log('📡 UDP状态更新:', status);
-      this.updateUDPStatus(status);
+    // 监听蓝牙数据
+    ipcRenderer.on('bluetooth-data-received', (event, data) => {
+      console.log('📊 蓝牙数据:', data);
+      this.handleBluetoothData(data);
     });
 
-    // 监听UDP设备发现
-    ipcRenderer.on('device-discovered', (event, device) => {
-      console.log('🔍 UDP设备发现:', device);
-      this.handleDeviceDiscovered(device);
+    // 监听蓝牙设备发现（实时）
+    ipcRenderer.on('bluetooth-device-discovered', (event, device) => {
+      console.log('🔍 IPC收到蓝牙设备发现:', device);
+      this.handleBluetoothDeviceDiscovered(device);
     });
 
-    // 监听串口连接状态
-    ipcRenderer.on('serial-connected', (event, info) => {
-      console.log('🔌 串口已连接:', info);
-      this.deviceConnected = true;
-      this.updateSerialStatus(true, info);
-      this.updateMockDataButtonState();
+    // 监听蓝牙设备扫描完成
+    ipcRenderer.on('bluetooth-devices-found', (event, devices) => {
+      this.handleBluetoothDevicesFound(devices);
     });
 
-    ipcRenderer.on('serial-disconnected', (event) => {
-      console.log('🔌 串口已断开');
-      this.deviceConnected = false;
-      this.updateSerialStatus(false);
-      this.updateMockDataButtonState();
-
-      // 清除模拟数据和高亮状态
-      this.simulatedMinDirection = -1;
-
-      // 重置自动锁定状态
-      this.currentMinDirection = -1;
-      this.minDirectionStartTime = 0;
-      this.clearAllHighlights();
+    // 监听蓝牙扫描停止
+    ipcRenderer.on('bluetooth-scan-stopped', (event, data) => {
+      console.log('🛑 蓝牙扫描已停止');
     });
 
-    // 监听串口传感器数据
-    ipcRenderer.on('serial-sensor-data', (event, data) => {
-      console.log('📊 串口传感器数据:', data);
-      this.handleSerialData(data);
-    });
+    // 初始化蓝牙事件
+    this.initBluetoothEvents();
   }
 
+
   /**
-   * 处理串口传感器数据
+   * 处理模拟传感器数据
    */
-  handleSerialData(data) {
+  handleMockData(data) {
     const { sequence, timestamp, distances, currentMinDirection, currentMinDistance, isLocked } = data;
 
     // 检查序号，避免重复处理
     if (sequence <= this.lastSequence) {
-      console.log(`📊 跳过重复数据包 #${sequence}`);
-      return; // 跳过已处理的数据包
+      console.log(`📊 跳过重复模拟数据包 #${sequence}`);
+      return;
     }
     this.lastSequence = sequence;
 
-    console.log(`📊 处理数据包 #${sequence}:`, {
+    console.log(`📊 处理模拟数据包 #${sequence}:`, {
       currentMinDirection,
       currentMinDistance,
       isLocked,
-      distances: distances.slice(0, 8) // 只显示前8个
+      distances: distances.slice(0, 8)
     });
 
     // 更新所有8个方向的距离数据（跳过已锁定和已完成的方向）
-    // 对于真实数据，更新所有未完成的方向；对于模拟数据，也更新所有未完成的方向
     for (let channel = 0; channel < 8; channel++) {
       const shouldUpdate = !this.lockedDirections.has(channel) &&
                           !this.completedDirections.has(channel);
 
       if (shouldUpdate) {
-        // 只更新未锁定且未完成的有效方向
         const distance = distances[channel];
         if (distance > 0 && distance < 9999) { // 有效距离
           this.updateSensorData(channel, distance, timestamp);
@@ -511,44 +534,18 @@ class SEBTApp {
       }
     }
 
-    // 处理锁定状态（来自ESP32的锁定）
+    // 处理锁定状态（模拟数据默认不锁定）
     if (isLocked) {
       // 锁定当前最小距离的方向
       if (!this.lockedDirections.has(currentMinDirection)) {
         this.lockDirection(currentMinDirection, currentMinDistance);
-        console.log(`🔒 ESP32锁定: ${directionMap[currentMinDirection].displayName} - ${currentMinDistance}mm`);
-        this.addLog(`🔒 ESP32锁定: ${directionMap[currentMinDirection].displayName} - ${currentMinDistance}mm`, 'success');
+        console.log(`🔒 模拟锁定: ${directionMap[currentMinDirection].displayName} - ${currentMinDistance}mm`);
+        this.addLog(`🔒 模拟锁定: ${directionMap[currentMinDirection].displayName} - ${currentMinDistance}mm`, 'success');
       }
-    } else if (this.deviceConnected) {
-      // ESP32未锁定，前端进行自动锁定检查
-      this.checkAutoLock(currentMinDirection, currentMinDistance);
     }
 
     // 高亮当前最近方向（排除已完成测距的方向）
     this.highlightClosestDirection(distances);
-  }
-
-  /**
-   * 更新串口连接状态显示
-   */
-  updateSerialStatus(connected, info = null) {
-    const statusElement = document.getElementById('serial-status');
-    if (statusElement) {
-      if (connected) {
-        statusElement.textContent = `串口: ${info.port} (${info.baudRate})`;
-        statusElement.className = 'status-item status-connected';
-      } else {
-        statusElement.textContent = '串口: 未连接';
-        statusElement.className = 'status-item status-disconnected';
-      }
-    }
-
-    // 添加到日志
-    if (connected) {
-      this.addLog(`🔌 串口已连接: ${info.port}`, 'success');
-    } else {
-      this.addLog('🔌 串口已断开', 'warning');
-    }
   }
 
   /**
@@ -660,8 +657,8 @@ class SEBTApp {
 
     console.log('📤 发送模拟数据包:', mockData);
 
-    // 通过相同的处理流程处理模拟数据（就像从端口传入一样）
-    this.handleSerialData(mockData);
+    // 直接处理模拟数据（不再通过串口处理流程）
+    this.handleMockData(mockData);
 
     // 添加日志记录
     const minDir = directionMap[minDirection];
@@ -812,15 +809,20 @@ class SEBTApp {
    */
   updateRealtimeSensorDisplay(channel, sensorData, isMinDistance) {
     const gridElement = this.gridElements.get(channel);
-    if (!gridElement) return;
+    if (!gridElement) {
+      console.warn(`⚠️ UI元素未找到: 方向${channel}`);
+      return;
+    }
 
     const distanceElement = gridElement.querySelector('.distance-display');
-    if (!distanceElement) return;
+    if (!distanceElement) {
+      console.warn(`⚠️ 距离显示元素未找到: 方向${channel}`);
+      return;
+    }
 
     // 更新距离显示
-    distanceElement.textContent = sensorData.distance > 0
-      ? `${sensorData.distance} mm`
-      : '--- mm';
+    const displayText = sensorData.distance > 0 ? `${sensorData.distance} mm` : '--- mm';
+    distanceElement.textContent = displayText;
 
     // 移除所有高亮类
     gridElement.classList.remove('active', 'min-distance');
@@ -831,6 +833,7 @@ class SEBTApp {
     // 如果是当前最小距离，高亮显示
     if (isMinDistance && sensorData.distance > 0) {
       gridElement.classList.add('min-distance');
+      distanceElement.style.color = '#059669'; // 绿色高亮最小距离
       distanceElement.style.color = '#059669'; // 绿色高亮
     }
   }
@@ -925,16 +928,6 @@ class SEBTApp {
   }
 
   /**
-   * 更新IP地址显示
-   */
-  updateIPDisplay() {
-    const ipElement = document.getElementById('local-ip');
-    if (ipElement) {
-      ipElement.textContent = `IP: ${this.localIP}`;
-    }
-  }
-
-  /**
    * 更新UDP连接状态显示
    */
   updateUDPStatus(status) {
@@ -961,6 +954,22 @@ class SEBTApp {
   }
 
   /**
+   * 处理蓝牙设备发现（实时单个设备）
+   */
+  handleBluetoothDeviceDiscovered(device) {
+    // 添加到设备列表UI
+    this.addBluetoothDeviceToList(device);
+  }
+
+  /**
+   * 处理蓝牙设备扫描完成
+   */
+  handleBluetoothDevicesFound(devices) {
+    // 更新设备列表UI
+    this.updateBluetoothDeviceList(devices);
+  }
+
+  /**
    * 处理UDP发现的设备
    */
   handleDeviceDiscovered(device) {
@@ -984,6 +993,1989 @@ class SEBTApp {
     // 可以在这里添加自动连接逻辑
     // 比如自动切换到UDP发现的设备IP
     console.log(`设备已发现并验证: ${device.ip}:${device.port}`);
+  }
+
+  /**
+   * 更新蓝牙连接状态
+   */
+  updateBluetoothStatus(status) {
+    const bluetoothElement = document.getElementById('bluetooth-status');
+    if (!bluetoothElement || !status) return;
+
+    this.bleConnected = !!status.connected;
+    this.connectedDevice = status.device || this.connectedDevice;
+
+    bluetoothElement.classList.remove('connected', 'searching', 'disconnected');
+
+    const connected = !!status.connected;
+    const name = status?.device?.name || '主机';
+    bluetoothElement.textContent = status.text ||
+      (connected ? `📡 主机BLE: 已连接 (${name})` : '📡 主机BLE: 未连接');
+
+    if (status.class) {
+      const classes = status.class.split(' ');
+      classes.forEach(cls => {
+        if (cls.trim()) bluetoothElement.classList.add(cls.trim());
+      });
+    } else {
+      bluetoothElement.classList.add(connected ? 'connected' : 'disconnected');
+    }
+
+    if (!status.noClickable) {
+      bluetoothElement.classList.add('bluetooth-clickable');
+    }
+
+    bluetoothElement.classList.add('bluetooth-status');
+  }
+
+  /**
+   * 更新从机BLE连接状态
+   */
+  updateSlaveBLEStatus(status) {
+    const slaveElement = document.getElementById('slave-status');
+    if (!slaveElement || !status) return;
+
+    this.slaveDeviceConnected = !!status.connected;
+    this.slaveDevice = status.device || this.slaveDevice;
+
+    slaveElement.classList.remove('connected', 'searching', 'disconnected');
+
+    const connected = !!status.connected;
+    const name = status?.device?.name || '从机';
+    slaveElement.textContent = status.text ||
+      (connected ? `🦶 从机BLE: 已连接 (${name})` : '🦶 从机BLE: 未连接');
+
+    if (status.class) {
+      const classes = status.class.split(' ');
+      classes.forEach(cls => cls.trim() && slaveElement.classList.add(cls.trim()));
+    } else {
+      slaveElement.classList.add(connected ? 'connected' : 'disconnected');
+    }
+
+    slaveElement.classList.add('bluetooth-status');
+    slaveElement.classList.add('bluetooth-clickable');
+  }
+
+  /**
+   * 处理蓝牙数据
+   */
+  handleBluetoothData(data) {
+    // 解析蓝牙JSON数据
+    try {
+      const jsonData = JSON.parse(data.data);
+
+      // 处理8方向距离数据
+      if (jsonData.distances && Array.isArray(jsonData.distances)) {
+        jsonData.distances.forEach(([direction, distance]) => {
+          const sensorData = {
+            direction: direction,
+            distance: distance,
+            timestamp: jsonData.timestamp,
+            source: 'bluetooth',
+            type: 'realtime'
+          };
+
+          this.updateSensorDisplay(sensorData);
+
+          // 如果是最小距离方向，更新高亮
+          if (direction === jsonData.minDir) {
+            this.updateMinDistanceHighlight(direction);
+          }
+        });
+      }
+    } catch (error) {
+      console.error('解析蓝牙数据失败:', error);
+    }
+  }
+
+  /**
+   * 开始蓝牙测距数据收集
+   */
+  startBluetoothMeasurementCollection(channel, direction) {
+    console.log('📊 开始蓝牙测距数据收集:', direction.displayName, '方向', channel);
+
+    // 初始化收集状态
+    this.bluetoothMeasurementCollection = {
+      channel: channel,
+      direction: direction,
+      distances: [],
+      maxSamples: 3,
+      timeout: 15000, // 15秒超时
+      startTime: Date.now()
+    };
+
+    // 设置超时
+    this.bluetoothMeasurementCollection.timeoutId = setTimeout(() => {
+      console.warn('⚠️ 蓝牙测距数据收集超时');
+      this.cancelBluetoothMeasurementCollection();
+      this.addLog('⚠️ 蓝牙测距数据收集超时，请检查主机连接', 'warning');
+    }, this.bluetoothMeasurementCollection.timeout);
+
+    console.log(`📊 开始收集 ${this.bluetoothMeasurementCollection.maxSamples} 个距离样本`);
+  }
+
+  /**
+   * 发送蓝牙命令
+   */
+  sendBluetoothCommand(command) {
+    console.log('[Bluetooth] 发送命令:', command);
+    const { ipcRenderer } = require('electron');
+    ipcRenderer.send('bluetooth-send-command', command);
+  }
+
+
+  /**
+   * 解析蓝牙扫描数据 (兼容旧格式)
+   */
+  parseBluetoothScanLegacyData(dataString) {
+    // 解析格式类似："[45,25.3],[90,28.7],[135,22.1],..."
+    const distances = [];
+    const directions = [0, 45, 90, 135, 180, 225, 270, 315];
+
+    try {
+      // 移除可能的方括号和引号
+      let cleanData = dataString.replace(/[\[\]"]/g, '');
+
+      // 按逗号分割每个方向的数据
+      const parts = cleanData.split('],[');
+
+      parts.forEach((part, index) => {
+        const values = part.split(',');
+        if (values.length >= 2) {
+          const direction = directions[index] || 0;
+          const distance = parseFloat(values[1]);
+
+          if (!isNaN(distance)) {
+            distances.push({
+              direction: direction,
+              distance: distance,
+              timestamp: new Date().toISOString(),
+              source: 'ble',
+              type: 'scan'
+            });
+          }
+        }
+      });
+
+    } catch (error) {
+      console.warn('BLE扫描数据解析警告:', error);
+    }
+
+    return distances;
+  }
+
+  /**
+   * 处理BLE锁定数据
+   */
+  handleBLELockData(data) {
+    console.log('🔒 处理BLE锁定数据:', data);
+
+    try {
+      // 解析主机发送的JSON格式锁定数据
+      const lockData = this.parseBLELockJsonData(data.data);
+
+      if (lockData && lockData.locked) {
+        // 将BLE锁定数据转换为与硬件相同的格式
+        const sensorData = {
+          direction: lockData.directionIndex, // 使用方向索引 (0-7)
+          distance: lockData.distance,
+          timestamp: data.timestamp || new Date().toISOString(),
+          source: 'ble',
+          type: 'lock'
+        };
+
+        // 处理锁定事件
+        this.handleLockEvent(sensorData);
+
+        // 添加BLE数据日志
+        const directionName = directionMap[lockData.directionIndex]?.displayName || '未知';
+        this.addBLEDataLog(`锁定事件: ${directionName} ${lockData.distance}mm`, 'success');
+
+        // 添加BLE特有的日志
+        this.addLog({
+          id: Date.now(),
+          timestamp: data.timestamp,
+          channel: lockData.directionIndex,
+          code: 'BLE',
+          displayName: 'BLE锁定',
+          distance: lockData.distance,
+          source: 'hardware',
+          message: `🔒 主机锁定: ${lockData.directionName} - ${lockData.distance}mm`,
+          type: 'ble-lock'
+        });
+      }
+
+    } catch (error) {
+      console.error('❌ 处理BLE锁定数据失败:', error);
+      this.addLog({
+        id: Date.now(),
+        timestamp: new Date().toISOString(),
+        channel: 'ERROR',
+        code: 'BLE',
+        displayName: 'BLE错误',
+        distance: null,
+        message: `锁定数据解析失败: ${error.message}`,
+        type: 'error'
+      });
+    }
+  }
+
+  /**
+   * 开始BLE测距数据收集
+   */
+  startBLEMeasurementCollection(channel, direction) {
+    console.log(`📊 开始收集BLE测距数据: ${direction.displayName} (通道: ${channel})`);
+
+    // 初始化收集状态
+    this.bleMeasurementCollection = {
+      channel: channel,
+      direction: direction,
+      distances: [], // 存储最近的距离数据
+      maxSamples: 3, // 收集3个样本
+      timeout: 5000, // 5秒超时
+      startTime: Date.now()
+    };
+
+    // 设置超时
+    this.bleMeasurementCollection.timeoutId = setTimeout(() => {
+      if (this.bleMeasurementCollection && this.bleMeasurementCollection.channel === channel) {
+        console.warn('⚠️ BLE测距数据收集超时');
+        this.cancelBLEMeasurementCollection();
+        this.addLog('⚠️ BLE测距数据收集超时，请检查主机连接', 'warning');
+      }
+    }, this.bleMeasurementCollection.timeout);
+  }
+
+  /**
+   * 处理BLE测距数据收集
+   */
+  handleBLEMeasurementData(scanData) {
+    if (!this.bleMeasurementCollection) return;
+
+    const { channel, direction, distances, maxSamples } = this.bleMeasurementCollection;
+
+    try {
+      // 从扫描数据中提取对应方向的距离
+      const parsedData = this.parseBLEScanJsonData(scanData.data);
+
+      if (parsedData && parsedData.directionIndex === channel && parsedData.distance > 0) {
+        // 添加有效的距离数据
+        distances.push(parsedData.distance);
+        console.log(`📊 BLE测距样本 ${distances.length}/${maxSamples}: ${parsedData.distance}mm`);
+
+        // 检查是否收集够了样本
+        if (distances.length >= maxSamples) {
+          // 计算平均值
+          const averageDistance = Math.round(distances.reduce((sum, dist) => sum + dist, 0) / distances.length);
+          console.log(`📊 BLE测距完成: 平均值 ${averageDistance}mm (样本: [${distances.join(', ')}])`);
+
+          // 完成测距
+          this.completeBLEMeasurement(averageDistance, direction);
+
+          // 清理收集状态
+          this.clearBLEMeasurementCollection();
+        }
+      }
+    } catch (error) {
+      console.error('❌ 处理BLE测距数据失败:', error);
+    }
+  }
+
+  /**
+   * 完成BLE测距
+   */
+  completeBLEMeasurement(averageDistance, direction) {
+    // 找到对应的通道
+    const channel = Object.values(directionMap).findIndex(dir => dir.code === direction.code);
+
+    if (channel !== -1) {
+      console.log(`📐 BLE测距完成: ${direction.displayName} = ${averageDistance}mm`);
+      this.handleManualMeasurementResult(channel, averageDistance, direction);
+    }
+  }
+
+  /**
+   * 取消BLE测距数据收集
+   */
+  cancelBLEMeasurementCollection() {
+    if (this.bleMeasurementCollection) {
+      if (this.bleMeasurementCollection.timeoutId) {
+        clearTimeout(this.bleMeasurementCollection.timeoutId);
+      }
+
+      // 恢复测距按钮状态
+      if (this.waitingForManualResult) {
+        const { direction } = this.waitingForManualResult;
+        const measureBtn = document.getElementById(`measure-${direction.code}`);
+        if (measureBtn) {
+          measureBtn.textContent = '开始测距';
+          measureBtn.disabled = false;
+        }
+      }
+
+      this.bleMeasurementCollection = null;
+      this.waitingForManualResult = null;
+    }
+  }
+
+  /**
+   * 清理BLE测距数据收集状态
+   */
+  clearBLEMeasurementCollection() {
+    if (this.bleMeasurementCollection) {
+      if (this.bleMeasurementCollection.timeoutId) {
+        clearTimeout(this.bleMeasurementCollection.timeoutId);
+      }
+      this.bleMeasurementCollection = null;
+    }
+  }
+
+  /**
+   * 解析BLE锁定数据 (JSON格式)
+   */
+  parseBLELockJsonData(dataString) {
+    try {
+      console.log('🔒 解析BLE锁定JSON数据:', dataString);
+
+      // 尝试解析JSON数据
+      const jsonData = JSON.parse(dataString.trim());
+
+      // 提取锁定数据
+      const locked = jsonData.locked || false;
+      const directionIndex = jsonData.direction || 0;
+      const directionName = jsonData.directionName || `方向${directionIndex}`;
+      const distance = jsonData.distance || 0;
+
+      return {
+        locked: locked,
+        directionIndex: directionIndex,
+        directionName: directionName,
+        distance: distance
+      };
+
+    } catch (error) {
+      console.warn('BLE锁定JSON数据解析失败:', error, '原始数据:', dataString);
+      return null;
+    }
+  }
+
+  /**
+   * 初始化BLE事件监听
+   */
+  async initBLEEvents() {
+    console.log('🔄 初始化BLE事件...');
+
+    // 初始化BLE IPC监听器（在DOM加载后立即设置，避免错过设备发现事件）
+    this.setupBLEIPCHandlers();
+
+    // BLE设备选择对话框将在模态框打开时初始化
+
+    // 绑定BLE状态标签点击事件
+    const bleStatus = document.getElementById('ble-status');
+    if (bleStatus) {
+      bleStatus.addEventListener('click', async (event) => {
+        // 无论连接状态如何都允许点击，连接状态下用于查看设备信息和管理
+        // 检查是否是Ctrl+点击，用于诊断模式
+        if (event.ctrlKey) {
+          console.log('🔧 进入BLE诊断模式...');
+        }
+
+        this.showBLEDeviceModal();
+      });
+
+      // 添加右键菜单用于诊断
+      bleStatus.addEventListener('contextmenu', async (event) => {
+        event.preventDefault();
+        console.log('🔧 右键触发BLE诊断...');
+      });
+
+      console.log('✅ BLE状态标签点击事件已绑定 (Ctrl+点击或右键进行诊断)');
+    } else {
+      console.error('❌ 未找到BLE状态标签');
+    }
+
+
+    // 添加双击刷新功能 (用于调试)
+    if (bleStatus) {
+      bleStatus.addEventListener('dblclick', () => {
+        console.log('🔄 双击刷新BLE状态');
+        if (!this.bleConnected) {
+          this.updateBLEStatus({
+            text: '📱 主机BLE: 未连接',
+            class: 'disconnected'
+          });
+        }
+      });
+    }
+  }
+
+  /**
+   * 初始化主页BLE状态显示
+   */
+  initBLEStatusDisplay() {
+    const statusElement = document.getElementById('bluetooth-status');
+    if (statusElement) {
+      // 设置初始状态
+      this.updateBLEStatus({
+        text: '📱 主机BLE: 未连接',
+        class: 'disconnected',
+        clickable: true
+      });
+
+      // 注意：点击事件在initBluetoothEvents中统一绑定，避免重复绑定
+    }
+  }
+
+  /**
+   * 初始化蓝牙事件
+   */
+  async initBluetoothEvents() {
+    console.log('🔄 初始化蓝牙事件...');
+
+  // 初始化主页BLE状态显示
+  this.initBLEStatusDisplay();
+
+  // 初始化蓝牙设备选择对话框
+  this.initBluetoothDeviceModal();
+
+    // 绑定蓝牙状态标签点击事件
+    const bluetoothStatus = document.getElementById('bluetooth-status');
+    if (bluetoothStatus) {
+      bluetoothStatus.addEventListener('click', async (event) => {
+        // 无论连接状态如何都允许点击，连接状态下用于查看设备信息和管理
+        // 检查是否是Ctrl+点击，用于诊断模式
+        if (event.ctrlKey) {
+          console.log('🔧 进入蓝牙诊断模式...');
+        }
+
+        this.showBluetoothDeviceModal();
+      });
+
+      // 添加右键菜单用于诊断
+      bluetoothStatus.addEventListener('contextmenu', async (event) => {
+        event.preventDefault();
+        console.log('🔧 右键触发蓝牙诊断...');
+      });
+
+      console.log('✅ 蓝牙状态标签点击事件已绑定 (Ctrl+点击或右键进行诊断)');
+    } else {
+      console.error('❌ 未找到蓝牙状态标签');
+    }
+
+    // 添加双击刷新功能 (用于调试)
+    if (bluetoothStatus) {
+      bluetoothStatus.addEventListener('dblclick', () => {
+        console.log('🔄 双击刷新蓝牙状态');
+        if (!this.bleConnected) {
+          this.updateBluetoothStatus({
+            text: '📱 蓝牙: 未连接',
+            class: 'disconnected'
+          });
+        }
+      });
+    }
+  }
+
+  /**
+   * 初始化蓝牙设备选择对话框
+   */
+  initBluetoothDeviceModal() {
+    this.bluetoothDeviceModal = document.getElementById('bluetooth-device-modal');
+    this.bluetoothDeviceList = document.getElementById('bluetooth-device-list');
+    // 统一使用bleDeviceList变量名
+    this.bleDeviceList = this.bluetoothDeviceList;
+
+    this.foundDevices = [];
+
+    // 绑定设备列表点击事件（使用事件委托）
+    if (this.bleDeviceList) {
+      // 处理连接按钮点击
+      this.bleDeviceList.addEventListener('click', (event) => {
+        if (event.target.classList.contains('bluetooth-connect-action-btn')) {
+          event.stopPropagation();
+          const deviceId = event.target.dataset.deviceId;
+          if (deviceId) {
+            this.connectToSelectedBluetoothDeviceDirect(deviceId);
+          }
+        }
+      });
+
+      // 处理设备项悬停效果
+      this.bleDeviceList.addEventListener('mouseenter', (event) => {
+        const deviceItem = event.target.closest('.bluetooth-device-item');
+        if (deviceItem) {
+          deviceItem.classList.add('active');
+        }
+      }, true);
+
+      this.bleDeviceList.addEventListener('mouseleave', (event) => {
+        const deviceItem = event.target.closest('.bluetooth-device-item');
+        if (deviceItem) {
+          deviceItem.classList.remove('active');
+        }
+      }, true);
+    }
+
+    // 绑定模态框关闭事件
+    const bluetoothModalClose = document.getElementById('bluetooth-modal-close');
+    if (bluetoothModalClose) {
+      bluetoothModalClose.addEventListener('click', () => {
+        this.hideBluetoothDeviceModal();
+      });
+    }
+
+    // 点击模态框背景关闭
+    if (this.bluetoothDeviceModal) {
+      this.bluetoothDeviceModal.addEventListener('click', (event) => {
+        if (event.target === this.bluetoothDeviceModal) {
+          this.hideBluetoothDeviceModal();
+        }
+      });
+    }
+
+    // 绑定扫描控制按钮
+    this.bindBluetoothScanControls();
+
+    console.log('✅ 蓝牙设备模态框已初始化');
+  }
+
+  /**
+   * 绑定蓝牙扫描控制按钮
+   */
+  bindBluetoothScanControls() {
+    const disconnectBtn = document.getElementById('bluetooth-disconnect-btn');
+    const clearDataLogBtn = document.getElementById('bluetooth-clear-data-log-btn');
+
+    if (disconnectBtn) {
+      disconnectBtn.addEventListener('click', () => {
+        this.disconnectBluetoothDevice();
+      });
+    }
+
+    if (clearDataLogBtn) {
+      clearDataLogBtn.addEventListener('click', () => {
+        this.clearBluetoothDataLogs();
+      });
+    }
+  }
+
+  /**
+   * 显示蓝牙设备选择对话框
+   */
+  showBluetoothDeviceModal() {
+    console.log('📱 showBluetoothDeviceModal 被调用');
+    console.log('📱 this.bluetoothDeviceModal:', this.bluetoothDeviceModal);
+
+    if (this.bluetoothDeviceModal) {
+      console.log('📱 模态框元素存在，准备显示');
+
+      // 更新模态框标题
+      const titleElement = document.getElementById('bluetooth-modal-title');
+      console.log('📱 titleElement:', titleElement);
+      if (titleElement) {
+        const isHost = this.bleTarget !== 'slave';
+        const prefix = isHost ? '📡 主机BLE' : '🦶 从机BLE';
+        titleElement.textContent = this.bleConnected ?
+          `${prefix} - 已连接` : `${prefix} - 设备选择`;
+        console.log('📱 标题已更新为:', titleElement.textContent);
+      }
+
+      // 更新连接状态区域显示
+      this.updateBluetoothModalConnectionStatus();
+
+      // 延迟初始化并自动开始BLE扫描
+      setTimeout(() => {
+        this.initializeBLEModalElements();
+
+        // 如果有已发现的设备，先显示它们，否则显示扫描提示
+        if (this.foundDevices && this.foundDevices.length > 0) {
+          console.log('📱 显示已发现的BLE设备:', this.foundDevices.length);
+          this.updateBLEDeviceList(); // 显示已发现的设备
+        } else {
+          this.updateBLEDeviceList('正在自动扫描BLE设备...'); // 显示扫描提示
+        }
+
+        // 自动开始BLE扫描
+        console.log('🔄 BLE模态框打开，自动开始BLE扫描');
+        this.startBLEScan();
+      }, 100);
+
+      // 显示模态框
+      this.bluetoothDeviceModal.classList.add('show');
+      console.log('📱 已添加.show类，当前classList:', this.bluetoothDeviceModal.classList);
+
+      // 强制检查样式
+      const computedStyle = window.getComputedStyle(this.bluetoothDeviceModal);
+      console.log('📱 模态框display样式:', computedStyle.display);
+      console.log('📱 模态框visibility样式:', computedStyle.visibility);
+
+      // 延迟初始化按钮元素，确保DOM已更新
+      setTimeout(() => {
+        this.initializeBLEModalElements();
+      }, 100);
+    } else {
+      console.error('❌ 蓝牙模态框元素不存在!');
+    }
+  }
+
+  /**
+   * 隐藏蓝牙设备选择对话框
+   */
+  hideBluetoothDeviceModal() {
+    if (this.bluetoothDeviceModal) {
+      this.bluetoothDeviceModal.classList.remove('show');
+      console.log('📱 隐藏蓝牙设备对话框');
+
+      // 重置扫描按钮状态，避免状态残留
+      this.updateBluetoothScanButtons(false);
+    }
+  }
+
+  /**
+   * 更新蓝牙模态框连接状态显示
+   */
+  updateBluetoothModalConnectionStatus() {
+    const statusArea = document.getElementById('bluetooth-connection-status');
+    const deviceNameElement = document.getElementById('bluetooth-connected-device-name');
+    const indicatorElement = document.getElementById('bluetooth-connection-indicator');
+
+    if (statusArea && deviceNameElement && indicatorElement) {
+      if (this.bleConnected && this.connectedDevice) {
+        statusArea.style.display = 'block';
+        deviceNameElement.textContent = this.connectedDevice.name || '未知设备';
+        indicatorElement.className = 'bluetooth-indicator connected';
+      } else {
+        statusArea.style.display = 'none';
+      }
+    }
+  }
+
+  /**
+   * 开始蓝牙设备扫描
+   */
+  startBluetoothScan() {
+    console.log('🔍 开始蓝牙设备扫描...');
+
+    const { ipcRenderer } = require('electron');
+
+    // 清空之前的设备列表
+    this.clearBluetoothDeviceList();
+    this.updateBLEDeviceList('正在扫描附近设备...');
+
+    // 发送扫描请求到主进程
+    ipcRenderer.send('bluetooth-start-scan');
+
+    // 5秒后自动停止扫描，避免长时间占用
+    setTimeout(() => {
+      this.stopBluetoothScan();
+    }, 5000);
+  }
+
+  /**
+   * 停止蓝牙设备扫描
+   */
+  stopBluetoothScan() {
+    console.log('🛑 停止蓝牙设备扫描...');
+
+    const { ipcRenderer } = require('electron');
+
+    // 发送停止扫描请求到主进程
+    ipcRenderer.send('bluetooth-stop-scan');
+  }
+
+  /**
+   * 直接连接到选定的蓝牙设备
+   */
+  connectToSelectedBluetoothDeviceDirect(deviceId) {
+    console.log('🔗 标记设备为已连接状态:', deviceId);
+
+    // 防止重复连接
+    if (this.bleConnected) {
+      console.warn('⚠️ 已经连接到设备，忽略连接请求');
+      return;
+    }
+
+    // 在单向广播模式下，只需要标记设备为已连接状态
+    // 找到对应的设备信息
+    const device = this.foundDevices.find(d => d.id === deviceId || d.address === deviceId);
+    if (device) {
+      // 更新连接状态
+      this.handleBLEConnectionChange(true, device);
+      this.addBLELog(`已连接到SEBT设备: ${device.name}`, 'success');
+
+      // 发送状态更新到主进程（用于保持状态同步）
+      const { ipcRenderer } = require('electron');
+      ipcRenderer.send('ble-status-update', { connected: true, device });
+    } else {
+      console.error('❌ 未找到设备信息:', deviceId);
+      this.addBLELog(`连接失败：未找到设备 ${deviceId}`, 'error');
+    }
+  }
+
+  /**
+   * 断开蓝牙设备连接
+   */
+  disconnectBluetoothDevice() {
+    console.log('🔌 断开蓝牙设备连接');
+
+    const { ipcRenderer } = require('electron');
+
+    if (!this.bleConnected) {
+      console.warn('⚠️ 当前未连接到设备');
+      return;
+    }
+
+    // 发送断开连接请求到主进程
+    ipcRenderer.send('bluetooth-disconnect');
+
+    // 更新UI状态
+    this.addBluetoothLog('正在断开连接...', 'info');
+  }
+
+  /**
+   * 清空蓝牙设备列表显示
+   */
+  clearBluetoothDeviceList() {
+    if (this.bleDeviceList) {
+      // 保留表头，清除设备项
+      const items = this.bleDeviceList.querySelectorAll('.ble-device-item:not(.header)');
+      items.forEach(item => item.remove());
+    }
+    this.foundDevices = [];
+  }
+
+  /**
+   * 添加单个蓝牙设备到列表UI
+   */
+  addBluetoothDeviceToList(device) {
+    console.log(`[Bluetooth] 开始处理设备: ${device.name}, 列表元素:`, this.bleDeviceList);
+
+    if (!this.bleDeviceList) {
+      console.error('[Bluetooth] bleDeviceList不存在');
+      return;
+    }
+
+    // 过滤目标设备（区分主机/从机）
+    const deviceName = (device.name || '').toLowerCase().trim();
+    const upperName = deviceName.toUpperCase();
+    const wantHost = this.bleTarget === 'host';
+    const matchHost = upperName.includes('HOST');
+    const matchSlave = upperName.includes('SLAVE') || upperName.includes('FSR');
+    const matchSEBT = upperName.includes('SEBT');
+
+    // 如果是主机模式，允许SEBT设备通过（包括没有明确名称的）
+    if (wantHost && !(matchHost || matchSEBT || (!deviceName && device.id))) {
+      console.log(`[Bluetooth] 跳过非主机设备: "${device.name}" (ID: ${device.id})`);
+      return;
+    }
+    if (!wantHost && !(matchSlave || (matchSEBT && !matchHost))) {
+      console.log(`[Bluetooth] 跳过非从机设备: ${device.name}`);
+      return;
+    }
+
+    console.log(`[Bluetooth] 添加设备到UI: ${device.name}, ID: ${device.id}`);
+
+    // 移除默认的占位符（如果存在）
+    const placeholderItem = this.bleDeviceList.querySelector('.ble-device-item:not([data-device-id])');
+    if (placeholderItem) {
+      placeholderItem.remove();
+      console.log('[Bluetooth] 已移除占位符');
+    }
+
+    // 检查设备是否已在foundDevices数组中
+    const existingDeviceIndex = this.foundDevices.findIndex(d => d.id === device.id);
+    if (existingDeviceIndex >= 0) {
+      console.log(`[Bluetooth] 设备已在foundDevices中，更新信息: ${device.name}`);
+      // 更新设备信息
+      this.foundDevices[existingDeviceIndex] = device;
+      // 不需要更新UI，直接返回
+      return;
+    }
+
+    // 检查设备是否已在DOM中
+    const existingItem = this.bleDeviceList.querySelector(`[data-device-id="${device.id}"]`);
+    if (existingItem) {
+      console.log(`[Bluetooth] 设备已在DOM中，跳过添加: ${device.name}`);
+      // 更新foundDevices数组
+      this.foundDevices.push(device);
+      return;
+    }
+
+    // 创建新的设备项
+    const deviceItem = document.createElement('div');
+    deviceItem.className = 'ble-device-item';
+    deviceItem.setAttribute('data-device-id', device.id);
+
+    deviceItem.innerHTML = `
+      <div class="ble-device-content">
+        <div class="ble-device-info">
+          <div class="ble-device-name">${device.name || '未知设备'}</div>
+        </div>
+        <div class="ble-device-actions">
+          <button class="ble-connect-action-btn" data-device-id="${device.id}">连接</button>
+        </div>
+      </div>
+    `;
+
+    // 添加连接按钮事件
+    const connectBtn = deviceItem.querySelector('.ble-connect-action-btn');
+    if (connectBtn) {
+      connectBtn.addEventListener('click', () => {
+        console.log(`🔗 连接BLE设备: ${device.name || device.id}`);
+        this.connectToSelectedBluetoothDeviceDirect(device.id);
+      });
+    }
+
+    this.bleDeviceList.appendChild(deviceItem);
+    this.foundDevices.push(device);
+  }
+
+  /**
+   * 更新蓝牙设备列表UI（扫描完成后）
+   */
+  updateBluetoothDeviceList(devices) {
+    console.log('[Bluetooth] 更新设备列表，设备数量:', devices.length);
+
+    if (!this.bleDeviceList) {
+      console.error('[Bluetooth] bleDeviceList不存在，无法更新');
+      return;
+    }
+
+    // 清空现有设备列表
+    this.clearBluetoothDeviceList();
+    console.log('[Bluetooth] 已清空设备列表');
+
+    // 添加所有设备
+    devices.forEach(device => {
+      console.log(`[Bluetooth] 处理设备: ${device.name}`);
+      this.addBluetoothDeviceToList(device);
+    });
+
+    console.log('[Bluetooth] 设备列表更新完成，最终子元素数量:', this.bleDeviceList.children.length);
+  }
+
+  /**
+   * 更新蓝牙扫描按钮状态
+   */
+  updateBluetoothScanButtons(_isScanning) {
+    // 按钮已移除，保持空实现以兼容旧调用
+  }
+
+  /**
+   * 添加蓝牙日志
+   */
+  addBluetoothLog(message, type = 'info') {
+    const logContainer = document.getElementById('bluetooth-log-container');
+    if (logContainer) {
+      const logEntry = document.createElement('div');
+      logEntry.className = `bluetooth-log-entry ${type}`;
+      logEntry.innerHTML = `<span class="timestamp">[${new Date().toLocaleTimeString()}]</span> ${message}`;
+      logContainer.appendChild(logEntry);
+      logContainer.scrollTop = logContainer.scrollHeight;
+    }
+  }
+
+  /**
+   * 清空蓝牙日志
+   */
+  clearBluetoothLogs() {
+    const logContainer = document.getElementById('bluetooth-log-container');
+    if (logContainer) {
+      logContainer.innerHTML = '<div class="bluetooth-log-entry">蓝牙管理器已初始化</div>';
+    }
+  }
+
+  /**
+   * 清空蓝牙数据日志
+   */
+  clearBluetoothDataLogs() {
+    const dataLogContainer = document.getElementById('bluetooth-data-log-container');
+    if (dataLogContainer) {
+      dataLogContainer.innerHTML = '<div class="bluetooth-log-entry info">等待主机连接...</div>';
+    }
+  }
+
+  /**
+   * 添加蓝牙数据日志
+   */
+  addBluetoothDataLog(message, type = 'info') {
+    const dataLogContainer = document.getElementById('bluetooth-data-log-container');
+    if (dataLogContainer) {
+      const logEntry = document.createElement('div');
+      logEntry.className = `bluetooth-log-entry ${type}`;
+      logEntry.innerHTML = `<span class="timestamp">[${new Date().toLocaleTimeString()}]</span> ${message}`;
+      dataLogContainer.appendChild(logEntry);
+      dataLogContainer.scrollTop = dataLogContainer.scrollHeight;
+    }
+  }
+
+
+  /**
+   * 禁用BLE按钮
+   */
+  disableBLEButton(reason) {
+    // 不再使用独立的按钮，现在使用状态标签
+    this.updateBLEStatus({
+      text: `📱 BLE: ${reason}`,
+      class: 'disconnected'
+    });
+  }
+
+
+  /**
+   * 打开浏览器BLE页面
+   */
+
+  /**
+   * 初始化BLE设备选择对话框
+   */
+  initBLEDeviceModal() {
+    this.bleDeviceModal = document.getElementById('bluetooth-device-modal');
+    this.bleDeviceList = document.getElementById('bluetooth-device-list');
+
+    this.foundDevices = [];
+
+    // 绑定设备列表点击事件（使用事件委托）
+    if (this.bleDeviceList) {
+      // 处理连接按钮点击
+      this.bleDeviceList.addEventListener('click', (event) => {
+        if (event.target.classList.contains('ble-connect-action-btn')) {
+          event.stopPropagation();
+          const deviceId = event.target.dataset.deviceId;
+          console.log('🔗 点击连接按钮，设备ID:', deviceId);
+          if (deviceId) {
+            this.connectToSelectedBLEDeviceDirect(deviceId);
+          }
+        }
+      });
+
+      // 处理设备项悬停效果
+      this.bleDeviceList.addEventListener('mouseenter', (event) => {
+        const deviceItem = event.target.closest('.ble-device-item');
+        if (deviceItem) {
+          deviceItem.classList.add('active');
+        }
+      }, true);
+
+      this.bleDeviceList.addEventListener('mouseleave', (event) => {
+        const deviceItem = event.target.closest('.ble-device-item');
+        if (deviceItem) {
+          deviceItem.classList.remove('active');
+        }
+      }, true);
+    }
+
+    // 设置IPC监听器
+    this.setupBLEIPCHandlers();
+
+    console.log('✅ BLE设备选择对话框已初始化');
+  }
+
+  /**
+   * 设置BLE IPC监听器
+   */
+
+  /**
+   * 显示BLE设备管理对话框
+   */
+  showBLEDeviceModal() {
+    if (!this.bleDeviceModal) return;
+
+    console.log('📱 显示BLE设备管理对话框');
+
+    // 根据连接状态显示不同界面
+    if (this.bleConnected && this.connectedDevice) {
+      // 连接状态：显示设备信息和管理界面
+      this.showBLEConnectedModal();
+    } else {
+      // 未连接状态：显示扫描界面
+      this.showBLEConnectModal();
+    }
+
+    // 显示对话框
+    this.bleDeviceModal.classList.add('show');
+
+    // 初始化对话框元素
+    this.initializeBLEModalElements();
+
+    // 添加日志
+    this.addBLELog('BLE设备管理对话框已打开', 'info');
+  }
+
+  /**
+   * 显示BLE连接界面（未连接状态）
+   */
+  showBLEConnectModal() {
+    console.log('📱 显示BLE连接界面');
+
+    // 重置对话框状态
+    this.resetBLEModal();
+
+    // 更新模态框标题
+    const titleElement = document.getElementById('ble-modal-title');
+    if (titleElement) {
+      titleElement.textContent = this.bleTarget === 'slave' ? '🦶 从机BLE设备连接' : '🔵 主机BLE设备连接';
+    }
+
+    // 显示扫描相关的元素
+    this.showBLEScanElements();
+  }
+
+  /**
+   * 显示BLE设备管理界面（已连接状态）
+   */
+  showBLEConnectedModal() {
+    console.log('📱 显示BLE设备管理界面');
+
+    // 更新模态框标题
+    const titleElement = document.getElementById('ble-modal-title');
+    if (titleElement) {
+      const name = this.bleTarget === 'slave'
+        ? (this.slaveDevice?.name || '已连接从机')
+        : (this.connectedDevice?.name || '已连接主机');
+      titleElement.textContent = `🔗 BLE设备管理 - ${name}`;
+    }
+
+    // 显示已连接设备的信息
+    this.showBLEConnectedElements();
+  }
+
+  /**
+   * 显示BLE扫描相关元素
+   */
+  showBLEScanElements() {
+    // 隐藏连接状态相关元素
+    if (this.bleConnectedDeviceName) this.bleConnectedDeviceName.style.display = 'none';
+    if (this.bleConnectionIndicator) this.bleConnectionIndicator.style.display = 'none';
+    if (this.bleDisconnectBtn) this.bleDisconnectBtn.style.display = 'none';
+
+    // 显示扫描相关元素
+    if (this.bleScanSection) this.bleScanSection.style.display = 'block';
+  }
+
+  /**
+   * 显示BLE连接状态相关元素
+   */
+  showBLEConnectedElements() {
+    // 显示连接状态相关元素
+    if (this.bleConnectedDeviceName) {
+      this.bleConnectedDeviceName.textContent = this.connectedDevice.name || '未知设备';
+      this.bleConnectedDeviceName.style.display = 'inline';
+    }
+    if (this.bleConnectionIndicator) {
+      this.bleConnectionIndicator.className = 'ble-indicator connected';
+      this.bleConnectionIndicator.style.display = 'inline';
+    }
+    if (this.bleDisconnectBtn) this.bleDisconnectBtn.style.display = 'inline';
+
+    // 隐藏扫描相关元素
+    if (this.bleScanSection) this.bleScanSection.style.display = 'none';
+
+    // 清空设备列表
+    this.foundDevices = [];
+    this.updateBLEDeviceList();
+  }
+
+  /**
+   * 隐藏BLE设备管理对话框
+   */
+  hideBLEDeviceModal() {
+    if (!this.bleDeviceModal) return;
+
+    console.log('📱 隐藏BLE设备管理对话框');
+    this.bleDeviceModal.classList.remove('show');
+
+    // 停止扫描
+    this.stopBLEScan();
+  }
+
+  /**
+   * 设置BLE IPC监听器
+   */
+  setupBLEIPCHandlers() {
+    // 防止重复设置监听器
+    if (this.bleIPCHandlersSetup) {
+      return;
+    }
+    this.bleIPCHandlersSetup = true;
+
+    const { ipcRenderer } = require('electron');
+
+    // 监听连接成功
+    ipcRenderer.on('ble-connected', (event, device) => {
+      console.log('🔗 BLE连接成功:', device.name);
+      this.handleBLEConnectionChange(true, device);
+      this.addBLELog(`已连接到: ${device.name}`, 'success');
+    });
+
+    // 监听断开连接
+    ipcRenderer.on('ble-disconnected', (event) => {
+      console.log('🔌 BLE连接已断开');
+      this.handleBLEConnectionChange(false, null);
+      this.addBLELog('BLE连接已断开', 'info');
+    });
+
+    // 监听连接丢失（自动检测）
+    ipcRenderer.on('ble-connection-lost', (event) => {
+      console.log('⚠️ BLE连接丢失，自动更新状态');
+      this.handleBLEConnectionChange(false, null);
+      this.addBLELog('检测到BLE连接丢失，已自动断开', 'warning');
+      this.addBLEDataLog('BLE连接丢失，设备可能已关闭或超出范围', 'error');
+    });
+
+    // 监听BLE设备发现
+    ipcRenderer.on('ble-device-found', (event, device) => {
+      console.log('🔍 IPC收到BLE设备发现:', device);
+      this.handleBLEDeviceFound(device);
+    });
+
+    // 监听BLE数据接收
+    ipcRenderer.on('ble-data-received', (event, data) => {
+      this.handleBLEData(data);
+    });
+
+    // BLE诊断结果在需要时单独监听（在startBLEScan中）
+
+    // 对于单向广播模式，我们不需要处理连接相关的错误
+    // 如果需要处理其他BLE相关错误，可以在这里添加
+
+    console.log('✅ BLE IPC监听器已设置');
+  }
+
+  /**
+   * 初始化BLE对话框元素
+   */
+  initializeBLEModalElements() {
+    // 防止重复初始化
+    if (this.bleModalInitialized) {
+      this.updateBLEConnectionStatus();
+      return;
+    }
+
+    // 获取元素引用
+    // 获取元素引用
+    this.bleModalTitle = document.getElementById('ble-modal-title');
+    this.bleModalClose = document.getElementById('ble-modal-close');
+    this.bleConnectionStatus = document.getElementById('ble-connection-status');
+    this.bleConnectedDeviceName = document.getElementById('ble-connected-device-name');
+    this.bleConnectionIndicator = document.getElementById('ble-connection-indicator');
+    this.bleDisconnectBtn = document.getElementById('ble-disconnect-btn');
+    this.bleScanSection = document.getElementById('ble-scan-section');
+    this.bleDeviceList = document.getElementById('bluetooth-device-list');
+    this.bleLogContainer = document.getElementById('ble-log-container');
+    this.bleClearLogBtn = document.getElementById('ble-clear-log-btn');
+    this.bleDataLogContainer = document.getElementById('bluetooth-data-log-container');
+    this.bleClearDataLogBtn = document.getElementById('ble-clear-data-log-btn');
+
+    // 设置BLE IPC监听器（在元素初始化后立即设置，避免竞态条件）
+    this.setupBLEIPCHandlers();
+
+    // 绑定设备列表事件
+    this.bindBLEDeviceListEvents();
+
+    // 绑定其他事件（只绑定一次）
+    if (this.bleModalClose && !this.bleModalClose.hasBoundEvents) {
+      this.bleModalClose.addEventListener('click', () => this.hideBLEDeviceModal());
+      this.bleModalClose.hasBoundEvents = true;
+    }
+    if (this.bleDisconnectBtn && !this.bleDisconnectBtn.hasBoundEvents) {
+      this.bleDisconnectBtn.addEventListener('click', () => this.disconnectBLE());
+      this.bleDisconnectBtn.hasBoundEvents = true;
+    }
+    if (this.bleClearLogBtn && !this.bleClearLogBtn.hasBoundEvents) {
+      this.bleClearLogBtn.addEventListener('click', () => this.clearBLELog());
+      this.bleClearLogBtn.hasBoundEvents = true;
+    }
+    if (this.bleClearDataLogBtn && !this.bleClearDataLogBtn.hasBoundEvents) {
+      this.bleClearDataLogBtn.addEventListener('click', () => this.clearBLEDataLog());
+      this.bleClearDataLogBtn.hasBoundEvents = true;
+    }
+
+    // 标记为已初始化
+    this.bleModalInitialized = true;
+
+    // 更新连接状态显示
+    this.updateBLEConnectionStatus();
+  }
+
+  /**
+   * 绑定BLE设备列表事件监听器
+   */
+  bindBLEDeviceListEvents() {
+    if (!this.bleDeviceList) return;
+
+    // 如果已经绑定过，先移除所有现有的事件监听器
+    if (this.bleDeviceList._boundEvents) {
+      // 复制一份监听器列表，然后逐个移除
+      const listeners = this.bleDeviceList._eventListeners || [];
+      listeners.forEach(({ type, listener, options }) => {
+        this.bleDeviceList.removeEventListener(type, listener, options);
+      });
+      this.bleDeviceList._eventListeners = [];
+    }
+
+    // 处理连接按钮点击
+    const clickHandler = (event) => {
+      if (event.target.classList.contains('ble-connect-action-btn')) {
+        event.stopPropagation();
+        const deviceId = event.target.dataset.deviceId;
+        console.log('🔗 点击连接按钮，设备ID:', deviceId);
+        if (deviceId) {
+          this.connectToSelectedBLEDeviceDirect(deviceId);
+        }
+      }
+    };
+
+    // 处理设备项悬停效果
+    const mouseEnterHandler = (event) => {
+      const deviceItem = event.target.closest('.ble-device-item');
+      if (deviceItem) {
+        deviceItem.classList.add('active');
+      }
+    };
+
+    const mouseLeaveHandler = (event) => {
+      const deviceItem = event.target.closest('.ble-device-item');
+      if (deviceItem) {
+        deviceItem.classList.remove('active');
+      }
+    };
+
+    // 添加事件监听器
+    this.bleDeviceList.addEventListener('click', clickHandler);
+    this.bleDeviceList.addEventListener('mouseenter', mouseEnterHandler, true);
+    this.bleDeviceList.addEventListener('mouseleave', mouseLeaveHandler, true);
+
+    // 保存监听器引用以便后续移除
+    this.bleDeviceList._eventListeners = [
+      { type: 'click', listener: clickHandler, options: false },
+      { type: 'mouseenter', listener: mouseEnterHandler, options: true },
+      { type: 'mouseleave', listener: mouseLeaveHandler, options: true }
+    ];
+
+    // 标记为已绑定
+    this.bleDeviceList._boundEvents = true;
+    console.log('✅ BLE设备列表事件监听器已绑定');
+  }
+
+  /**
+   * 重置BLE对话框状态
+   */
+  resetBLEModal() {
+    this.foundDevices = [];
+    this.updateBLEDeviceList();
+    this.clearBLELog();
+  }
+
+  /**
+   * 开始BLE扫描
+   */
+  startBLEScan() {
+    console.log('🔍 开始BLE设备扫描');
+
+    // 防止重复诊断
+    if (this.bleDiagnosing) {
+      console.log('⚠️ BLE诊断正在进行中，跳过重复诊断');
+      return;
+    }
+    this.bleDiagnosing = true;
+
+    // 不清空已有的设备列表，保持显示已发现的设备
+    // this.foundDevices = [];
+    this.updateBLEDeviceList('正在扫描BLE设备，请稍候...');
+
+    // 首先检查BLE库状态
+    this.addBLELog('正在检查BLE适配器状态...', 'info');
+
+    const { ipcRenderer } = require('electron');
+
+    // 发送诊断请求
+    ipcRenderer.send('ble-diagnose');
+
+    // 监听诊断结果
+    ipcRenderer.once('ble-diagnosis-result', (event, result) => {
+      console.log('🔍 BLE诊断结果:', result);
+      this.bleDiagnosing = false; // 重置诊断标志
+
+      // 检查BLE适配器状态
+      if (result.nobleState !== 'poweredOn') {
+        console.error('❌ BLE适配器未开启');
+        this.addBLELog('BLE适配器未开启，请启用蓝牙', 'error');
+        this.updateBLEDeviceList('❌ BLE适配器未开启，请启用蓝牙并重试');
+        return;
+      }
+
+      this.addBLELog('BLE适配器正常，开始扫描设备...', 'info');
+      // 开始扫描
+      this.updateBLEDeviceList('正在扫描BLE设备，请稍候...');
+      ipcRenderer.send('ble-start-scan');
+
+      // 8秒后自动停止扫描
+      setTimeout(() => {
+        this.stopBLEScan();
+      }, 8000);
+    });
+  }
+
+  /**
+   * 停止BLE扫描
+   */
+  stopBLEScan() {
+    console.log('🛑 停止BLE设备扫描');
+    const { ipcRenderer } = require('electron');
+    ipcRenderer.send('ble-stop-scan');
+
+    // 更新UI状态
+    if (this.foundDevices.length > 0) {
+      this.updateBLEDeviceList();
+      this.addBLELog(`扫描完成，发现${this.foundDevices.length}个BLE设备`, 'success');
+    } else {
+      this.updateBLEDeviceList('未发现BLE设备，请检查设备是否开启');
+      this.addBLELog('扫描完成，未发现BLE设备', 'warning');
+    }
+  }
+
+  /**
+   * 刷新BLE扫描（停止当前扫描并重新开始）
+   */
+
+  /**
+   * 断开BLE连接
+   */
+  disconnectBLE() {
+    console.log('🔌 断开BLE连接');
+    const { ipcRenderer } = require('electron');
+    ipcRenderer.send('ble-disconnect');
+    this.addBLELog('正在断开BLE连接...', 'info');
+  }
+
+  /**
+   * 更新BLE适配器状态
+   */
+  updateBLEAdapterState(state) {
+    this.bleAdapterState = state;
+    // 无论蓝牙状态如何，都显示"未连接"状态（因为还没有建立BLE连接）
+    this.updateBLEStatus({
+      text: '📱 BLE: 未连接',
+      class: 'disconnected'
+    });
+  }
+
+  /**
+   * 更新主页BLE状态显示
+   */
+  updateBLEStatus(status) {
+    const statusElement = document.getElementById('bluetooth-status');
+    if (statusElement) {
+      statusElement.textContent = status.text;
+      statusElement.className = 'bluetooth-status';
+      if (status.class) {
+        statusElement.classList.add(status.class);
+      }
+      if (status.clickable) {
+        statusElement.classList.add('bluetooth-clickable');
+      }
+    }
+  }
+
+  /**
+   * 更新BLE连接状态显示
+   */
+  updateBLEConnectionStatus() {
+    if (!this.bleConnectionStatus || !this.bleConnectedDeviceName) return;
+
+    if (this.bleConnected) {
+      this.bleConnectionStatus.style.display = 'flex';
+      this.bleScanSection.style.display = 'none';
+      this.bleConnectedDeviceName.textContent = this.connectedDevice?.name || 'SEBT设备';
+      this.bleConnectionIndicator.className = 'ble-indicator connected';
+      this.bleModalTitle.textContent = '🔗 BLE设备管理 (已连接)';
+    } else {
+      this.bleConnectionStatus.style.display = 'none';
+      this.bleScanSection.style.display = 'block';
+      this.bleModalTitle.textContent = '🔵 BLE设备管理';
+    }
+  }
+
+
+  /**
+   * 添加BLE数据日志
+   */
+  addBLEDataLog(message, type = 'info') {
+    if (!this.bleDataLogContainer) return;
+
+    const logEntry = document.createElement('div');
+    logEntry.className = `ble-log-entry ${type}`;
+    logEntry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+
+    this.bleDataLogContainer.appendChild(logEntry);
+    this.bleDataLogContainer.scrollTop = this.bleDataLogContainer.scrollHeight;
+  }
+
+  /**
+   * 清空BLE数据日志
+   */
+  /**
+   * 添加BLE日志
+   */
+  addBLELog(message, type = 'info') {
+    if (!this.bleLogContainer) return;
+
+    const logEntry = document.createElement('div');
+    logEntry.className = `ble-log-entry ${type}`;
+    logEntry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+
+    this.bleLogContainer.appendChild(logEntry);
+
+    // 限制日志数量
+    const entries = this.bleLogContainer.children;
+    if (entries.length > 20) {
+      this.bleLogContainer.removeChild(entries[0]);
+    }
+
+    // 自动滚动到底部
+    this.bleLogContainer.scrollTop = this.bleLogContainer.scrollHeight;
+  }
+
+
+  /**
+   * 清空BLE日志
+   */
+  clearBLELog() {
+    if (this.bleLogContainer) {
+      this.bleLogContainer.innerHTML = '';
+    }
+  }
+
+  clearBLEDataLog() {
+    if (this.bleDataLogContainer) {
+      this.bleDataLogContainer.innerHTML = '<div class="ble-log-entry info">等待主机连接...</div>';
+    }
+  }
+
+  /**
+   * 完全清除BLE数据日志（用于连接成功时）
+   */
+  clearBLEDataLogCompletely() {
+    if (this.bleDataLogContainer) {
+      this.bleDataLogContainer.innerHTML = '';
+    }
+  }
+
+
+  /**
+   * 添加发现的BLE设备到列表
+   */
+  addBLEDeviceToList(device) {
+    // 检查是否已存在
+    const existingIndex = this.foundDevices.findIndex(d => d.id === device.id || d.address === device.address);
+    if (existingIndex === -1) {
+      this.foundDevices.push(device);
+      console.log(`📱 添加BLE设备到列表: ${device.name} (${device.address})`);
+    } else {
+      // 更新现有设备信息
+      this.foundDevices[existingIndex] = device;
+    }
+
+    this.updateBLEDeviceList();
+  }
+
+  /**
+   * 更新BLE设备列表显示
+   */
+  updateBLEDeviceList(scanningMessage = null) {
+    if (!this.bleDeviceList) return;
+
+    console.log('🔄 updateBLEDeviceList 被调用，foundDevices:', this.foundDevices.length, 'scanningMessage:', scanningMessage);
+
+    let html = '';
+
+    if (scanningMessage) {
+      html = `
+        <div class="ble-device-item scanning">
+          <div class="ble-device-content">
+            <div class="ble-device-info">
+              <div class="ble-device-name">${scanningMessage}</div>
+              <div class="ble-device-id">
+                <span class="ble-scan-spinner"></span>
+                请稍候
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    } else if (this.foundDevices.length === 0) {
+      html = `
+        <div class="ble-device-item">
+          <div class="ble-device-content">
+            <div class="ble-device-info">
+              <div class="ble-device-name">未发现BLE设备</div>
+              <div class="ble-device-id">点击"开始扫描"发现周围的BLE设备</div>
+            </div>
+          </div>
+        </div>
+      `;
+    } else {
+      html = this.foundDevices.map(device => `
+        <div class="ble-device-item"
+             data-device-id="${device.id}">
+          <div class="ble-device-content">
+            <div class="ble-device-info">
+              <div class="ble-device-name">${device.name || '未知设备'}</div>
+              <div class="ble-device-id">
+                ${device.address}
+                ${device.rssi ? ` (信号: ${device.rssi}dB)` : ''}
+                ${device.connectable ? ' [可连接]' : ''}
+              </div>
+            </div>
+          </div>
+          <div class="ble-device-actions">
+            <button class="ble-connect-action-btn" data-device-id="${device.id}">连接</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    this.bleDeviceList.innerHTML = html;
+
+    // 重新绑定设备列表事件监听器，因为innerHTML清除了之前的监听器
+    // 先清除标记，允许重新绑定
+    if (this.bleDeviceList) {
+      this.bleDeviceList._boundEvents = false;
+    }
+    this.bindBLEDeviceListEvents();
+  }
+
+  /**
+   * 直接连接BLE设备（点击连接按钮）
+   */
+  connectToSelectedBLEDeviceDirect(deviceId) {
+    console.log('🔗 广播模式：标记BLE设备为已连接:', deviceId);
+
+    // 检查是否已经连接，避免重复连接
+    if (this.bleConnected) {
+      console.log('⚠️ BLE已经连接，无需重复连接');
+      this.addBLELog('BLE设备已连接，无需重复连接', 'warning');
+      return;
+    }
+
+    // 在广播模式下，不需要实际连接BLE设备
+    // 只需要标记为已连接状态，并开始监听广播数据
+    const device = this.foundDevices.find(d => d.address === deviceId || d.id === deviceId);
+    if (!device) {
+      console.error('❌ 未找到要连接的设备:', deviceId);
+      this.addBLELog('未找到要连接的设备', 'error');
+      return;
+    }
+
+    // 标记为已连接状态
+    this.bleConnected = true;
+    this.bleConnectedDevice = device;
+
+    this.addBLELog(`已连接到 ${device.name}，等待广播数据...`, 'success');
+
+    // 隐藏对话框，显示连接状态
+    this.hideBLEDeviceModal();
+    this.updateBLEStatus({ text: `📱 BLE: 已连接 ${device.name}`, class: 'connected' });
+
+    // 更新连接状态显示
+    this.updateBLEConnectionStatus();
+
+    console.log('✅ 广播模式连接完成，等待接收广播数据');
+
+    // 注意：广播模式下不需要发送IPC消息到主进程
+    // 主进程会在设备发现时自动处理数据接收
+  }
+
+
+  /**
+   * 处理BLE连接状态变化
+   */
+  handleBLEConnectionChange(connected, device) {
+    const name = device?.name || '';
+    const upper = name.toUpperCase();
+    const role = upper.includes('SLAVE') || upper.includes('FSR') ? 'slave' : 'host';
+
+    if (role === 'slave') {
+      this.slaveDeviceConnected = connected;
+      this.slaveDevice = connected ? device : null;
+      this.updateSlaveBLEStatus({
+        text: connected ? `🦶 从机BLE: 已连接 (${device?.name || 'SEBT-Slave'})` : '🦶 从机BLE: 未连接',
+        class: connected ? 'connected' : 'disconnected'
+      });
+    } else {
+      this.bleConnected = connected;
+      this.connectedDevice = connected ? device : null;
+      this.updateBluetoothStatus({
+        text: connected ? `📱 主机BLE: 已连接 (${device?.name || 'SEBT-Host'})` : '📱 主机BLE: 未连接',
+        class: connected ? 'connected' : 'disconnected'
+      });
+    }
+
+    if (connected) {
+      this.stopBLEScan();
+      // 连接成功时清除所有日志并添加连接成功消息
+      this.clearBLEDataLogCompletely();
+      this.addBLEDataLog(`已连接到 ${device?.name || 'SEBT-Host'}，等待数据...`, 'success');
+    } else {
+      this.cancelBLEMeasurementCollection();
+      this.addBLEDataLog('连接已断开，正在重新扫描...', 'warning');
+      // 断开连接时重新开始扫描
+      setTimeout(() => {
+        if (!this.bleConnected) { // 确保当前没有连接
+          console.log('🔄 检测到断开，重新开始BLE扫描');
+          this.startBLEScan();
+        }
+      }, 2000);
+    }
+
+    this.updateBLEConnectionStatus();
+  }
+
+  /**
+   * 处理BLE设备发现
+   */
+  handleBLEDeviceFound(device) {
+    console.log('🔍 处理BLE设备发现:', device);
+
+    // 添加设备到UI列表
+    this.addBluetoothDeviceToList(device);
+
+    // 对于单向广播模式，不需要主动连接
+    // ESP32会定期广播数据，我们只需要等待接收即可
+    console.log(`📻 单向广播模式：设备 ${device.name} 已发现，等待接收广播数据`);
+
+    // 刷新设备列表显示
+    this.updateBLEDeviceList();
+
+    // 更新连接状态为"已发现设备"
+    this.handleBLEConnectionChange(true, device);
+    this.addBLELog(`发现SEBT设备: ${device.name}`, 'success');
+  }
+
+  /**
+   * 连接到发现的BLE设备
+   */
+  async connectToFoundBLEDevice(device) {
+    console.log('🔗 连接到发现的BLE设备:', device.name);
+
+    try {
+      const { ipcRenderer } = require('electron');
+      ipcRenderer.send('ble-connect', device.address || device.id);
+
+      // 等待连接结果
+      ipcRenderer.once('ble-connected', () => {
+        console.log('✅ BLE连接成功');
+        this.handleBLEConnectionChange(true, device);
+        this.addBLELog(`已连接到: ${device.name}`, 'success');
+      });
+
+      ipcRenderer.once('ble-error', (event, error) => {
+        console.error('❌ BLE连接失败:', error);
+        this.addBLELog(`连接失败: ${error.message}`, 'error');
+      });
+
+    } catch (error) {
+      console.error('❌ BLE连接异常:', error);
+      this.addBLELog(`连接异常: ${error.message}`, 'error');
+    }
+  }
+
+  /**
+   * 处理BLE数据接收
+   */
+  handleBLEData(data) {
+    try {
+      if (data.type === 'scan_data') {
+        const payload = JSON.parse(data.data);
+        if (payload.source === 'host') {
+          this.handleHostBroadcast(payload);
+          return;
+        }
+        if (payload.source === 'slave') {
+          this.addBLEDataLog(`从机压力: ${payload.pressure} (raw=${payload.pressureRaw || 0})`, 'info');
+          return;
+        }
+        // 兼容旧格式
+        this.handleBLERealtimeData(payload);
+        return;
+      }
+      if (data.type === 'lock_data') {
+        const lockData = JSON.parse(data.data);
+        this.handleBLELockData(lockData);
+      }
+    } catch (error) {
+      console.error('❌ 处理BLE数据失败:', error, data);
+    }
+  }
+
+  /**
+   * 处理BLE实时扫描数据
+   */
+  handleBLERealtimeData(data) {
+    // 更新主页8方向数据显示
+    if (data.distances && Array.isArray(data.distances)) {
+      console.log(`📊 BLE数据: 收到${data.distances.length}个方向数据，最小方向${data.currentMinDirection}:${data.currentMinDistance}mm`);
+
+      data.distances.forEach(([direction, distance]) => {
+        // 创建传感器数据对象
+        const sensorData = {
+          distance: distance,
+          direction: direction,
+          timestamp: data.timestamp || Date.now(),
+          active: true,
+          source: 'ble',
+          isMinDistance: data.currentMinDirection === direction
+        };
+
+        this.sensorData.set(direction, sensorData);
+
+        // 更新UI显示
+        this.updateRealtimeSensorDisplay(direction, sensorData, sensorData.isMinDistance);
+      });
+
+      // 高亮最小距离方向
+      this.highlightClosestDirection();
+
+      // 更新BLE数据日志
+      this.addBLEDataLog(`方向${data.currentMinDirection}: ${data.currentMinDistance}mm`, 'info');
+    }
+
+    // 处理方向锁定状态
+    if (data.lockedDirection !== undefined && data.lockedDirection !== this.lockedDirection) {
+      this.lockedDirection = data.lockedDirection;
+      if (data.lockedDirection >= 0) {
+        this.addBLELog(`🎯 方向已锁定: ${data.lockedDirection}`, 'success');
+        this.addBLEDataLog(`方向锁定成功: ${data.lockedDirection} (${data.currentMinDistance}mm)`, 'success');
+      } else {
+        this.addBLELog('🔓 方向已解锁', 'info');
+        this.addBLEDataLog('方向解锁', 'info');
+      }
+    }
+  }
+
+  /**
+   * 处理主机广播的8方向数据
+   * @param {Object} payload
+   */
+  handleHostBroadcast(payload) {
+    const timestamp = payload.timestamp || Date.now();
+    const distancesArray = new Array(8).fill(9999);
+
+    if (Array.isArray(payload.distances)) {
+      payload.distances.forEach(([dir, dist]) => {
+        if (typeof dir === 'number' && dir >= 0 && dir < 8 && typeof dist === 'number') {
+          distancesArray[dir] = dist;
+          this.updateSensorData(dir, dist, 'hardware');
+          const sensorData = this.sensorData.get(dir);
+          if (sensorData) {
+            sensorData.timestamp = timestamp;
+            this.updateSensorDisplay(dir, sensorData);
+          }
+        }
+      });
+    }
+
+    // 高亮最近方向
+    this.highlightClosestDirection(distancesArray);
+
+    // 计算最小方向
+    let minDir = payload.currentMinDirection;
+    let minDist = payload.currentMinDistance;
+    if (minDir === undefined || minDir === -1) {
+      let calcMin = 9999;
+      let calcDir = -1;
+      distancesArray.forEach((d, idx) => {
+        if (d < calcMin) {
+          calcMin = d;
+          calcDir = idx;
+        }
+      });
+      minDir = calcDir;
+      minDist = calcMin;
+    }
+
+    // 记录主机数据日志
+    this.addBLEDataLog(
+      `主机广播: 方向${minDir} 距离 ${minDist}mm`,
+      'success'
+    );
+  }
+
+  /**
+   * 处理BLE诊断结果
+   */
+  handleBLEDiagnosis(diagnosis) {
+    console.log('🔍 处理BLE诊断结果:', diagnosis);
+
+    try {
+      let logMessage = 'BLE诊断结果:\n';
+
+      // 防御性编程：确保所有属性都存在
+      const safeDiagnosis = {
+        implementation: diagnosis.implementation || 'unknown',
+        nobleLoaded: diagnosis.nobleLoaded !== undefined ? diagnosis.nobleLoaded : false,
+        nobleScanning: diagnosis.nobleScanning !== undefined ? diagnosis.nobleScanning : false,
+        discoveredDevicesCount: diagnosis.discoveredDevicesCount || 0,
+        connectedPeripheral: diagnosis.connectedPeripheral || false,
+        bleStatusAvailable: diagnosis.bleStatusAvailable !== undefined ? diagnosis.bleStatusAvailable : false,
+        bleStatus: diagnosis.bleStatus || null,
+        platform: diagnosis.platform || 'unknown',
+        arch: diagnosis.arch || 'unknown',
+        error: diagnosis.error || null
+      };
+
+      // 根据实现方式显示不同的信息
+      if (safeDiagnosis.implementation === 'powershell') {
+        logMessage += `- BLE实现方式: PowerShell脚本 ✅\n`;
+        logMessage += `- 脚本状态: ${safeDiagnosis.nobleLoaded ? '✅' : '❌'}\n`;
+        logMessage += `- BLE硬件状态: ${safeDiagnosis.bleStatusAvailable ? '✅' : '❌'}\n`;
+        if (safeDiagnosis.bleStatus) {
+          logMessage += `- 蓝牙适配器: ${safeDiagnosis.bleStatus.adapterCount || 0} 个\n`;
+          logMessage += `- 蓝牙可用: ${safeDiagnosis.bleStatus.bluetoothAvailable ? '✅' : '❌'}\n`;
+        }
+      } else if (safeDiagnosis.implementation === 'noble-direct') {
+        logMessage += `- BLE实现方式: @stoprocent/noble 直接调用 ✅\n`;
+        logMessage += `- noble库加载: ${safeDiagnosis.nobleLoaded ? '✅' : '❌'}\n`;
+        logMessage += `- BLE适配器状态: ${safeDiagnosis.bleStatus || 'unknown'}\n`;
+        if (safeDiagnosis.libraryVersion) {
+          logMessage += `- noble版本: ${safeDiagnosis.libraryVersion}\n`;
+        }
+      } else {
+        logMessage += `- BLE库加载: ${safeDiagnosis.nobleLoaded ? '✅' : '❌'}\n`;
+        logMessage += `- BLE状态: ${diagnosis.nobleState || 'unknown'}\n`;
+      }
+
+      logMessage += `- 正在扫描: ${safeDiagnosis.nobleScanning}\n`;
+      logMessage += `- 已发现设备: ${safeDiagnosis.discoveredDevicesCount}\n`;
+      logMessage += `- 已连接设备: ${safeDiagnosis.connectedPeripheral ? '✅' : '❌'}\n`;
+      logMessage += `- 平台: ${safeDiagnosis.platform} ${safeDiagnosis.arch}\n`;
+
+      if (safeDiagnosis.error) {
+        logMessage += `- 错误: ${safeDiagnosis.error}\n`;
+      }
+
+      this.addBLELog(logMessage, safeDiagnosis.nobleLoaded ? 'success' : 'error');
+
+      // 根据实现方式检查状态
+      if (safeDiagnosis.implementation === 'powershell') {
+        if (!safeDiagnosis.nobleLoaded) {
+          this.addBLELog('❌ PowerShell脚本状态异常', 'error');
+        } else if (!safeDiagnosis.bleStatusAvailable) {
+          this.addBLELog('⚠️ 无法检查BLE硬件状态，请确保蓝牙已启用', 'warning');
+        } else {
+          this.addBLELog('✅ BLE PowerShell实现正常', 'success');
+        }
+      } else if (safeDiagnosis.implementation === 'noble-direct') {
+        // @stoprocent/noble 直接调用实现
+        if (!safeDiagnosis.nobleLoaded) {
+          this.addBLELog('❌ @stoprocent/noble库未正确加载', 'error');
+          alert('BLE库加载失败！\n\n请尝试重新安装依赖：\nnpm install @stoprocent/noble\n然后重启应用');
+        } else if (safeDiagnosis.bleStatus !== 'poweredOn') {
+          this.addBLELog(`⚠️ BLE适配器状态: ${safeDiagnosis.bleStatus}，请确保蓝牙已启用`, 'warning');
+        } else {
+          this.addBLELog('✅ BLE @stoprocent/noble实现正常', 'success');
+        }
+      } else {
+        // 传统BLE库检查
+        if (!safeDiagnosis.nobleLoaded) {
+          this.addBLELog('❌ BLE库未正确加载，请检查依赖安装', 'error');
+          alert('BLE库加载失败！\n\n请尝试重新安装依赖：\n1. 删除 node_modules\n2. 运行 npm install\n3. 重启应用');
+        }
+      }
+    } catch (error) {
+      console.error('❌ 处理BLE诊断结果时出错:', error);
+      this.addBLELog(`处理诊断结果失败: ${error.message}`, 'error');
+    }
+  }
+
+  /**
+   * 处理BLE错误
+   */
+  handleBLEError(error) {
+    console.error('❌ BLE错误:', error);
+
+    // 防御性编程：确保error是一个对象
+    const safeError = typeof error === 'object' && error !== null ? error : { message: String(error) };
+
+    // 显示错误状态（简化为未连接状态）
+    this.updateBLEStatus({
+      text: '📱 BLE: 未连接',
+      class: 'disconnected'
+    });
+
+    // 显示错误提示
+    setTimeout(() => {
+      alert(`BLE错误: ${safeError.message || '未知错误'}\n\n请检查ESP32是否正常运行。`);
+    }, 500);
+  }
+
+  /**
+   * 检查BLE状态
+   */
+
+
+
+
+
+  /**
+   * 处理BLE断开连接
+   */
+  handleBLEDisconnect() {
+    console.log('📱 BLE连接已断开');
+
+    // 更新状态
+    this.bleConnected = false;
+    this.deviceConnected = false; // 同步设备连接状态
+    this.bleDevice = null;
+    this.bleServer = null;
+    this.scanCharacteristic = null;
+    this.lockCharacteristic = null;
+    this.commandCharacteristic = null;
+
+    // 更新UI状态 - 断开连接后可以重新点击连接
+    this.updateBLEStatus({
+      text: '📱 BLE: 未连接',
+      class: 'disconnected'
+    });
+  }
+
+  /**
+   * 发送BLE命令
+   */
+  async sendBLECommand(command) {
+    if (!this.bleConnected) {
+      console.warn('⚠️ BLE未连接，无法发送命令');
+      return false;
+    }
+
+    try {
+      console.log('📤 发送BLE命令:', command);
+
+      // 通过IPC发送命令到主进程
+      const { ipcRenderer } = require('electron');
+      const result = await new Promise((resolve) => {
+        ipcRenderer.once('ble-command-sent', (event, result) => {
+          resolve(result);
+        });
+        ipcRenderer.once('ble-error', (event, error) => {
+          resolve({ success: false, error: error.message });
+        });
+        ipcRenderer.send('ble-send-command', command);
+      });
+
+      if (result.success) {
+        console.log('📤 BLE命令发送成功:', command);
+        return true;
+      } else {
+        console.error('❌ BLE命令发送失败:', result.error);
+        return false;
+      }
+
+    } catch (error) {
+      console.error('❌ BLE命令发送异常:', error);
+      return false;
+    }
   }
 
   /**

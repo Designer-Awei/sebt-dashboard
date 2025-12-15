@@ -6,7 +6,10 @@
   "scripts": {
     "start": "electron .",
     "dev": "powershell -ExecutionPolicy Bypass -Command \"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; chcp 65001 | Out-Null; npm run dev:raw\"",
-    "dev:raw": "electron ."
+    "dev:raw": "electron .",
+    "test-bt": "node test-bt-receiver.js",
+    "check-spp": "powershell -ExecutionPolicy Bypass -File check-spp-service.ps1",
+    "test-bt-help": "echo '运行经典蓝牙测试: 1.烧录test-bt-esp32c3.ino 2.HC-05会自动配置 3.npm run test-bt'"
   },
   "keywords": [
     "electron",
@@ -19,8 +22,8 @@
     "electron": "^39.2.6"
   },
   "dependencies": {
-    "@serialport/parser-readline": "^13.0.0",
-    "express": "^5.2.1",
-    "serialport": "^13.0.0"
+    "@stoprocent/noble": "^2.3.10",
+    "serialport": "^12.0.0",
+    "@serialport/parser-readline": "^12.0.0"
   }
 }

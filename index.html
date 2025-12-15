@@ -64,6 +64,7 @@
         .ip-display,
         .server-status,
         .udp-status,
+        .bluetooth-status,
         .status-item {
             font-size: 0.75rem;
             padding: 4px 8px;
@@ -81,17 +82,16 @@
             border: 1px solid #bbf7d0;
         }
 
-        .server-status {
-            color: #0891b2;
-            background: #ecfeff;
-            border: 1px solid #a5f3fc;
+
+        .udp-status,
+        .bluetooth-status {
+            width: 140px; /* 统一固定宽度 */
         }
 
         .udp-status {
             color: #dc2626;
             background: #fef2f2;
             border: 1px solid #fecaca;
-            min-width: 80px; /* 确保UDP状态有最小宽度 */
         }
 
         .udp-status.connected {
@@ -105,6 +105,427 @@
             background: #fffbeb;
             border-color: #fde68a;
         }
+
+        .bluetooth-status {
+            color: #7c3aed;
+            background: #faf5ff;
+            border: 1px solid #d8b4fe;
+        }
+
+        .ble-status.connected {
+            color: #16a34a;
+            background: #f0fdf4;
+            border-color: #bbf7d0;
+        }
+
+        .ble-status.searching {
+            color: #d97706;
+            background: #fffbeb;
+            border-color: #fde68a;
+        }
+
+        .bluetooth-status.bluetooth-clickable {
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .bluetooth-status.bluetooth-clickable {
+            cursor: pointer;
+        }
+
+        .ble-status.ble-clickable:hover {
+            background: #f3e8ff;
+        }
+
+        .ble-status.ble-clickable:active {
+            background: #e9d5ff;
+        }
+
+
+        /* BLE设备选择对话框 */
+        .bluetooth-device-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .bluetooth-device-modal.show {
+            display: flex;
+        }
+
+        .bluetooth-device-modal.show {
+            display: flex;
+        }
+
+        .bluetooth-device-dialog {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            max-width: 500px;
+            width: 90%;
+            max-height: 70vh;
+            overflow-y: auto;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .bluetooth-device-dialog h3 {
+            margin-top: 0;
+            color: #333;
+            font-size: 1.2rem;
+        }
+
+        .bluetooth-device-list {
+            margin: 15px 0;
+        }
+
+        .bluetooth-device-item,
+        .ble-device-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            margin: 5px 0;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .bluetooth-device-item:hover {
+            background: #f8f9fa;
+            border-color: #7c3aed;
+        }
+
+        .bluetooth-device-item.selected {
+            background: #f3e8ff;
+            border-color: #7c3aed;
+        }
+
+        .bluetooth-device-name {
+            font-weight: 500;
+            color: #333;
+        }
+
+        .bluetooth-device-id {
+            font-size: 0.8rem;
+            color: #666;
+        }
+
+        .bluetooth-device-signal {
+            color: #7c3aed;
+            font-weight: bold;
+        }
+
+        .bluetooth-device-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .bluetooth-device-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: background-color 0.2s;
+        }
+
+        .ble-device-btn.primary {
+            background: #7c3aed;
+            color: white;
+        }
+
+        .ble-device-btn.primary:hover {
+            background: #6d28d9;
+        }
+
+        .ble-device-btn.secondary {
+            background: #f3f4f6;
+            color: #374151;
+            border: 1px solid #d1d5db;
+        }
+
+        .ble-device-btn.secondary:hover {
+            background: #e5e7eb;
+        }
+
+        .ble-device-btn:disabled {
+            background: #e5e7eb;
+            color: #9ca3af;
+            cursor: not-allowed;
+        }
+
+        .ble-device-btn.small {
+            padding: 4px 8px;
+            font-size: 0.75rem;
+        }
+
+        /* BLE连接状态 */
+        .bluetooth-connection-status {
+            background: #f8f9fa;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .bluetooth-status-info {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .bluetooth-indicator {
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .ble-indicator.connected {
+            color: #28a745;
+        }
+
+        .ble-indicator.disconnected {
+            color: #dc3545;
+        }
+
+        .ble-indicator.connecting {
+            color: #ffc107;
+        }
+
+        /* BLE扫描控制 */
+        .bluetooth-scan-controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        /* 蓝牙日志区域 */
+        .bluetooth-log-section {
+            margin-top: 20px;
+            border-top: 1px solid #e0e0e0;
+            padding-top: 15px;
+        }
+
+        .bluetooth-log-section h4 {
+            margin: 0 0 10px 0;
+            color: #333;
+            font-size: 0.9rem;
+        }
+
+        .bluetooth-log-container {
+            background: #f8f9fa;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+            padding: 8px;
+            max-height: 150px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 0.75rem;
+            line-height: 1.4;
+        }
+
+        .bluetooth-log-entry {
+            margin: 2px 0;
+            padding: 2px 0;
+        }
+
+        .bluetooth-log-entry.error {
+            color: #dc3545;
+        }
+
+        .bluetooth-log-entry.success {
+            color: #28a745;
+        }
+
+        .bluetooth-log-entry.info {
+            color: #007bff;
+        }
+
+        .bluetooth-log-actions {
+            margin-top: 8px;
+            text-align: right;
+        }
+
+        .bluetooth-data-log-section {
+            margin-top: 20px;
+            border-top: 1px solid #e0e0e0;
+            padding-top: 15px;
+        }
+
+        .bluetooth-data-log-section h4 {
+            margin: 0 0 10px 0;
+            color: #333;
+            font-size: 0.9rem;
+        }
+
+        .bluetooth-data-log-container {
+            background: #f0f8ff;
+            border: 1px solid #b0d4ff;
+            border-radius: 4px;
+            padding: 8px;
+            max-height: 120px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 0.7rem;
+            line-height: 1.3;
+        }
+
+        /* BLE对话框头部 */
+        .bluetooth-modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .bluetooth-modal-close-btn {
+            background: none;
+            border: none;
+            font-size: 20px;
+            color: #666;
+            cursor: pointer;
+            padding: 5px;
+            border-radius: 3px;
+            transition: background-color 0.2s;
+        }
+
+        .ble-modal-close-btn:hover {
+            background: #f0f0f0;
+            color: #333;
+        }
+
+        /* BLE设备项滑动效果 */
+        .bluetooth-device-item {
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s ease;
+            border-radius: 8px;
+        }
+
+        .bluetooth-device-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            transition: all 0.3s ease;
+        }
+
+        .bluetooth-device-info,
+        .ble-device-info {
+            flex: 1;
+        }
+
+        .ble-device-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+        }
+
+        .bluetooth-device-actions,
+        .ble-device-actions {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            margin-left: 12px;
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .bluetooth-connect-action-btn {
+            background: linear-gradient(135deg, #7c3aed 0%, #a855f7 100%);
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            border-radius: 20px;
+            box-shadow: 0 4px 12px rgba(124, 58, 237, 0.3);
+            transition: all 0.2s ease;
+            white-space: nowrap;
+            position: relative;
+            overflow: hidden;
+            width: 100%;
+            max-width: 70px;
+            text-align: center;
+        }
+
+        .ble-connect-action-btn {
+            background: linear-gradient(135deg, #7c3aed 0%, #a855f7 100%);
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            border-radius: 20px;
+            box-shadow: 0 4px 12px rgba(124, 58, 237, 0.3);
+            transition: all 0.2s ease;
+            white-space: nowrap;
+            position: relative;
+            overflow: hidden;
+            width: 100%;
+            max-width: 70px;
+            text-align: center;
+        }
+
+        .ble-connect-action-btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+            transition: left 0.5s ease;
+        }
+
+        .ble-connect-action-btn:hover::before {
+            left: 100%;
+        }
+
+        .ble-connect-action-btn:hover {
+            background: linear-gradient(135deg, #8b5cf6 0%, #a855f7 100%);
+            transform: translateY(-1px);
+            box-shadow: 0 6px 20px rgba(124, 58, 237, 0.4);
+            color: white;
+        }
+
+        .ble-connect-action-btn:active {
+            transform: translateY(0);
+            box-shadow: 0 2px 8px rgba(124, 58, 237, 0.3);
+        }
+
+        .bluetooth-scan-spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #f3f4f6;
+            border-top: 2px solid #7c3aed;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 8px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
 
         .status-item {
             color: #dc2626;
@@ -413,10 +834,8 @@
                 <h1>SEBT 平衡测试系统</h1>
                 <p>监测平衡测试数据</p>
                 <div class="header-info">
-                    <div id="serial-status" class="status-item">🔌 串口: 未连接</div>
-                    <div id="udp-status" class="udp-status">📡 UDP: 等待连接</div>
-                    <div id="local-ip" class="ip-display">IP: 获取中...</div>
-                    <div class="server-status">🔗 服务运行中</div>
+                    <div id="slave-status" class="bluetooth-status bluetooth-clickable">🦶 从机BLE: 未连接</div>
+                    <div id="bluetooth-status" class="bluetooth-status bluetooth-clickable">📱 主机BLE: 未连接</div>
                 </div>
             </div>
 
@@ -448,6 +867,54 @@
                 </div>
                 <button class="control-button secondary" id="reset-locked-btn">重置实验状态</button>
                 <button class="control-button secondary" id="clear-logs-btn">清空日志</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 蓝牙设备管理对话框 -->
+    <div id="bluetooth-device-modal" class="bluetooth-device-modal">
+        <div class="bluetooth-device-dialog">
+            <div class="bluetooth-modal-header">
+                <h3 id="bluetooth-modal-title">🔵 蓝牙设备管理</h3>
+                <button id="bluetooth-modal-close" class="bluetooth-modal-close-btn" title="关闭">✕</button>
+            </div>
+
+            <!-- 连接状态区域 -->
+            <div id="bluetooth-connection-status" class="bluetooth-connection-status" style="display: none;">
+                <div class="bluetooth-status-info">
+                    <span id="bluetooth-connected-device-name">未连接</span>
+                    <span id="bluetooth-connection-indicator" class="bluetooth-indicator disconnected">●</span>
+                </div>
+                <div class="bluetooth-connection-actions">
+                    <button id="bluetooth-disconnect-btn" class="bluetooth-device-btn secondary">断开连接</button>
+                </div>
+            </div>
+
+            <!-- 设备扫描区域 -->
+            <div id="bluetooth-scan-section">
+                <div class="bluetooth-device-list" id="bluetooth-device-list">
+                    <div class="ble-device-item">
+                        <div class="ble-device-content">
+                            <div class="ble-device-info">
+                                <div class="ble-device-name">正在自动扫描BLE设备...</div>
+                                <div class="ble-device-id">SEBT设备将自动连接</div>
+                            </div>
+                        </div>
+                        <div class="ble-device-actions">
+                            <button class="ble-connect-action-btn" style="display: none;">连接</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bluetooth-data-log-section">
+                <h4>主机发送数据日志</h4>
+                <div class="bluetooth-data-log-container" id="bluetooth-data-log-container">
+                    <div class="bluetooth-log-entry info">等待主机连接...</div>
+                </div>
+                <div class="bluetooth-log-actions">
+                    <button id="bluetooth-clear-data-log-btn" class="bluetooth-device-btn secondary small">清空数据日志</button>
+                </div>
             </div>
         </div>
     </div>
