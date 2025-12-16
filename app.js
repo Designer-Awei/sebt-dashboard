@@ -65,6 +65,7 @@ class SEBTApp {
     this.currentMinDirection = -1; // 当前连续最短的方向
     this.minDirectionStartTime = 0; // 当前最短方向开始的时间
     this.minDirectionConsecutiveCount = 0; // 当前最短方向连续出现的次数
+    this.lockFeatureEnabled = false; // 锁定功能开关（默认关闭）
 
     this.initializeApp();
     this.setupEventListeners();
@@ -471,6 +472,32 @@ class SEBTApp {
         this.updateLockTimeDisplay();
         // 重置当前锁定计数，让新设置立即生效
         this.minDirectionConsecutiveCount = 0;
+      });
+    }
+
+    // 锁定功能开关
+    const lockFeatureToggle = document.getElementById('lock-feature-toggle');
+    if (lockFeatureToggle) {
+      lockFeatureToggle.addEventListener('change', (e) => {
+        this.lockFeatureEnabled = e.target.checked;
+        console.log(`🔒 锁定功能: ${this.lockFeatureEnabled ? '已开启' : '已关闭'}`);
+        
+        // 如果关闭锁定功能，清除所有锁定状态
+        if (!this.lockFeatureEnabled) {
+          this.lockedDirections.clear();
+          this.minDirectionConsecutiveCount = 0;
+          this.currentMinDirection = -1;
+          this.minDirectionStartTime = 0;
+          // 清除锁定状态的UI
+          this.gridElements.forEach((element, channel) => {
+            element.classList.remove('locked');
+            const measureBtn = element.querySelector('.manual-measure-btn');
+            if (measureBtn) {
+              measureBtn.style.display = 'none';
+            }
+          });
+          this.updateMinDistanceHighlight();
+        }
       });
     }
   }
@@ -2841,6 +2868,11 @@ class SEBTApp {
    * 检查并执行自动锁定（基于连续次数）
    */
   checkAutoLock(currentMinDirection, currentMinDistance) {
+    // 如果锁定功能未开启，不执行锁定检查
+    if (!this.lockFeatureEnabled) {
+      return;
+    }
+
     // 检查方向是否改变
     if (this.currentMinDirection !== currentMinDirection) {
       // 方向改变，重置连续计数

@@ -845,6 +845,79 @@
             line-height: 1.2;
         }
 
+        /* 锁定功能开关 */
+        .lock-feature-toggle-container {
+            margin-bottom: 15px;
+            padding: 12px;
+            background: #f8f9fa;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+        }
+
+        .lock-feature-toggle-label {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            cursor: pointer;
+            font-size: 14px;
+            color: #1e293b;
+            user-select: none;
+        }
+
+        .lock-feature-toggle-label-text {
+            font-weight: 500;
+        }
+
+        .lock-feature-toggle-switch {
+            position: relative;
+            width: 50px;
+            height: 26px;
+            margin-left: 12px;
+        }
+
+        .lock-feature-toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .lock-feature-toggle-slider {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #cbd5e1;
+            border-radius: 26px;
+            transition: background-color 0.3s;
+            cursor: pointer;
+        }
+
+        .lock-feature-toggle-slider:before {
+            content: "";
+            position: absolute;
+            height: 20px;
+            width: 20px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            border-radius: 50%;
+            transition: transform 0.3s;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        .lock-feature-toggle-switch input:checked + .lock-feature-toggle-slider {
+            background-color: #3b82f6;
+        }
+
+        .lock-feature-toggle-switch input:checked + .lock-feature-toggle-slider:before {
+            transform: translateX(24px);
+        }
+
+        .lock-feature-toggle-switch input:focus + .lock-feature-toggle-slider {
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
         /* 响应式设计 */
         @media (max-width: 1024px) {
             .sidebar {
@@ -906,6 +979,16 @@
             </div>
 
             <div class="controls">
+                <!-- 锁定功能开关 -->
+                <div class="lock-feature-toggle-container">
+                    <label class="lock-feature-toggle-label">
+                        <span class="lock-feature-toggle-label-text">开启/关闭锁定</span>
+                        <span class="lock-feature-toggle-switch">
+                            <input type="checkbox" id="lock-feature-toggle">
+                            <span class="lock-feature-toggle-slider"></span>
+                        </span>
+                    </label>
+                </div>
                 <div class="button-group">
                     <button class="control-button small" id="mock-data-btn">模拟8方向数据</button>
                     <button class="control-button small" id="mock-lock-btn">模拟锁定</button>
