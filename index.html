@@ -268,16 +268,66 @@
             font-size: 0.75rem;
         }
 
-        /* BLE连接状态 */
-        .bluetooth-connection-status {
+        /* 锁定时长设置 */
+        .lock-time-settings {
             background: #f8f9fa;
             border: 1px solid #e0e0e0;
             border-radius: 6px;
-            padding: 12px;
+            padding: 15px;
             margin-bottom: 15px;
+        }
+
+        .lock-time-settings h4 {
+            margin: 0 0 12px 0;
+            font-size: 14px;
+            font-weight: 600;
+            color: #1e293b;
+        }
+
+        .lock-time-slider-container {
+            margin-bottom: 10px;
+        }
+
+        .lock-time-slider {
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: #e2e8f0;
+            outline: none;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+
+        .lock-time-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #3b82f6;
+            cursor: pointer;
+        }
+
+        .lock-time-slider::-moz-range-thumb {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #3b82f6;
+            cursor: pointer;
+            border: none;
+            -moz-appearance: none;
+        }
+
+        .lock-time-info {
             display: flex;
             justify-content: space-between;
             align-items: center;
+            font-size: 13px;
+            color: #64748b;
+        }
+
+        .lock-time-info span {
+            font-weight: 600;
+            color: #1e293b;
         }
 
         .bluetooth-status-info {
@@ -357,11 +407,6 @@
             text-align: right;
         }
 
-        .bluetooth-data-log-section {
-            margin-top: 20px;
-            border-top: 1px solid #e0e0e0;
-            padding-top: 15px;
-        }
 
         .bluetooth-data-log-section h4 {
             margin: 0 0 10px 0;
@@ -865,8 +910,10 @@
                     <button class="control-button small" id="mock-data-btn">模拟8方向数据</button>
                     <button class="control-button small" id="mock-lock-btn">模拟锁定</button>
                 </div>
-                <button class="control-button secondary" id="reset-locked-btn">重置实验状态</button>
-                <button class="control-button secondary" id="clear-logs-btn">清空日志</button>
+                <div class="button-group">
+                    <button class="control-button secondary" id="reset-locked-btn">重置实验状态</button>
+                    <button class="control-button secondary" id="clear-logs-btn">清空日志</button>
+                </div>
             </div>
         </div>
     </div>
@@ -879,32 +926,29 @@
                 <button id="bluetooth-modal-close" class="bluetooth-modal-close-btn" title="关闭">✕</button>
             </div>
 
-            <!-- 连接状态区域 -->
-            <div id="bluetooth-connection-status" class="bluetooth-connection-status" style="display: none;">
-                <div class="bluetooth-status-info">
-                    <span id="bluetooth-connected-device-name">未连接</span>
-                    <span id="bluetooth-connection-indicator" class="bluetooth-indicator disconnected">●</span>
+            <!-- 锁定时长设置区域 -->
+            <div class="lock-time-settings">
+                <h4>锁定时长设置</h4>
+                <div class="lock-time-slider-container">
+                    <input type="range" id="lock-time-slider" class="lock-time-slider" min="5" max="30" value="10" step="1">
                 </div>
-                <div class="bluetooth-connection-actions">
-                    <button id="bluetooth-disconnect-btn" class="bluetooth-device-btn secondary">断开连接</button>
+                <div class="lock-time-info">
+                    <div>
+                        <span>连续次数:</span>
+                        <span id="lock-count-display">10</span>
+                        <span>次</span>
+                    </div>
+                    <div>
+                        <span>锁定时间:</span>
+                        <span id="lock-time-display">3.0</span>
+                        <span>秒</span>
+                    </div>
                 </div>
             </div>
 
-            <!-- 设备扫描区域 -->
-            <div id="bluetooth-scan-section">
-                <div class="bluetooth-device-list" id="bluetooth-device-list">
-                    <div class="ble-device-item">
-                        <div class="ble-device-content">
-                            <div class="ble-device-info">
-                                <div class="ble-device-name">正在自动扫描BLE设备...</div>
-                                <div class="ble-device-id">SEBT设备将自动连接</div>
-                            </div>
-                        </div>
-                        <div class="ble-device-actions">
-                            <button class="ble-connect-action-btn" style="display: none;">连接</button>
-                        </div>
-                    </div>
-                </div>
+            <!-- 设备扫描区域（BT模式下已隐藏，自动连接） -->
+            <div id="bluetooth-scan-section" style="display: none;">
+                <div class="bluetooth-device-list" id="bluetooth-device-list"></div>
             </div>
 
             <div class="bluetooth-data-log-section">

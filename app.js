@@ -33,7 +33,16 @@ const gridPositions = [
 class SEBTApp {
   constructor() {
     // 自动锁定相关常量
-    this.AUTO_LOCK_TIME_MS = 3000; // 3秒自动锁定阈值
+    // 硬件发送间隔：300ms（固定）
+    this.HARDWARE_SEND_INTERVAL_MS = 300;
+    // 锁定连续次数：默认10次（对应3秒）
+    this.LOCK_REQUIRED_COUNT = 10;
+    // 计算锁定时间（毫秒）
+    this.AUTO_LOCK_TIME_MS = this.LOCK_REQUIRED_COUNT * this.HARDWARE_SEND_INTERVAL_MS;
+    
+    // 无效值常量
+    this.INVALID_DISTANCE = 'invalid'; // 无效距离标记
+    this.MAX_VALID_DISTANCE = 2000; // 最大有效距离（与硬件端FILTER_MAX_MM一致）
 
     this.sensorData = new Map();
     this.logs = [];
@@ -55,14 +64,20 @@ class SEBTApp {
     // 自动锁定相关变量
     this.currentMinDirection = -1; // 当前连续最短的方向
     this.minDirectionStartTime = 0; // 当前最短方向开始的时间
+    this.minDirectionConsecutiveCount = 0; // 当前最短方向连续出现的次数
 
     this.initializeApp();
     this.setupEventListeners();
     this.setupGlobalClickListener();
     this.setupIPCListeners();
     this.updateMockDataButtonState(); // 初始化模拟按钮状态
-    this.updateBluetoothStatus({ connected: false, text: '📡 主机BLE: 未连接', class: 'disconnected' });
-    this.updateSlaveBLEStatus({ connected: false, text: '🦶 从机BLE: 未连接', class: 'disconnected' });
+    this.updateBluetoothStatus({ connected: false, text: '📡 主机BT: 未连接', class: 'disconnected' });
+    this.updateSlaveBLEStatus({ connected: false, text: '🦶 从机BT: 未连接', class: 'disconnected' });
+    
+    // 初始化锁定时长显示（延迟执行，确保DOM已加载）
+    setTimeout(() => {
+      this.updateLockTimeDisplay();
+    }, 100);
   }
 
   /**
@@ -441,6 +456,23 @@ class SEBTApp {
     if (clearLogsBtn) {
       clearLogsBtn.addEventListener('click', () => this.clearLogs());
     }
+
+    // 锁定时长滑动条
+    const lockTimeSlider = document.getElementById('lock-time-slider');
+    if (lockTimeSlider) {
+      // 初始化显示
+      this.updateLockTimeDisplay();
+      
+      // 监听滑动条变化
+      lockTimeSlider.addEventListener('input', (e) => {
+        const count = parseInt(e.target.value);
+        this.LOCK_REQUIRED_COUNT = count;
+        this.AUTO_LOCK_TIME_MS = count * this.HARDWARE_SEND_INTERVAL_MS;
+        this.updateLockTimeDisplay();
+        // 重置当前锁定计数，让新设置立即生效
+        this.minDirectionConsecutiveCount = 0;
+      });
+    }
   }
 
   /**
@@ -528,7 +560,7 @@ class SEBTApp {
 
       if (shouldUpdate) {
         const distance = distances[channel];
-        if (distance > 0 && distance < 9999) { // 有效距离
+        if (this.isValidDistance(distance)) { // 有效距离
           this.updateSensorData(channel, distance, timestamp);
         }
       }
@@ -614,7 +646,7 @@ class SEBTApp {
 
     // 生成8个方向的距离数据
     const distances = [];
-    let minDistance = 9999;
+    let minDistance = Infinity;
     let minDirection = -1;
 
     // 为所有8个方向生成距离（包括已完成的方向，但已完成的方向使用固定值）
@@ -624,7 +656,7 @@ class SEBTApp {
       if (this.completedDirections.has(channel)) {
         // 已完成的方向使用固定的历史读数
         const sensorData = this.sensorData.get(channel);
-        distance = sensorData ? sensorData.distance : 9999;
+        distance = sensorData && this.isValidDistance(sensorData.distance) ? sensorData.distance : this.INVALID_DISTANCE;
       } else {
         // 未完成的方向生成随机距离
         distance = Math.floor(Math.random() * 1950) + 50; // 50-2000mm
@@ -642,7 +674,7 @@ class SEBTApp {
     // 如果没有找到最小方向（所有方向都已完成），设置默认值
     if (minDirection === -1) {
       minDirection = 0;
-      minDistance = distances[0] || 9999;
+      minDistance = distances[0] && this.isValidDistance(distances[0]) ? distances[0] : Infinity;
     }
 
     // 构造与真实数据相同格式的数据包
@@ -820,9 +852,13 @@ class SEBTApp {
       return;
     }
 
-    // 更新距离显示
-    const displayText = sensorData.distance > 0 ? `${sensorData.distance} mm` : '--- mm';
-    distanceElement.textContent = displayText;
+    // 更新距离显示（将2000视为无效值）
+    const distance = sensorData.distance;
+    if (distance === this.MAX_VALID_DISTANCE || !this.isValidDistance(distance)) {
+      distanceElement.textContent = this.INVALID_DISTANCE;
+    } else {
+      distanceElement.textContent = this.formatDistance(distance);
+    }
 
     // 移除所有高亮类
     gridElement.classList.remove('active', 'min-distance');
@@ -831,7 +867,7 @@ class SEBTApp {
     distanceElement.style.color = '#3b82f6';
 
     // 如果是当前最小距离，高亮显示
-    if (isMinDistance && sensorData.distance > 0) {
+    if (isMinDistance && this.isValidDistance(distance)) {
       gridElement.classList.add('min-distance');
       distanceElement.style.color = '#059669'; // 绿色高亮最小距离
       distanceElement.style.color = '#059669'; // 绿色高亮
@@ -856,7 +892,7 @@ class SEBTApp {
     let minChannel = -1;
 
     this.sensorData.forEach((data, channel) => {
-      if (data.distance > 0 && data.distance < minDistance) {
+      if (this.isValidDistance(data.distance) && data.distance < minDistance) {
         minDistance = data.distance;
         minChannel = channel;
       }
@@ -876,6 +912,33 @@ class SEBTApp {
   }
 
   /**
+   * 检查距离值是否有效
+   * @param {number|string} distance 距离值
+   * @returns {boolean} 是否有效
+   */
+  isValidDistance(distance) {
+    if (distance === this.INVALID_DISTANCE || distance === 'invalid') {
+      return false;
+    }
+    if (typeof distance === 'number') {
+      return distance > 0 && distance <= this.MAX_VALID_DISTANCE;
+    }
+    return false;
+  }
+
+  /**
+   * 格式化距离显示
+   * @param {number|string} distance 距离值
+   * @returns {string} 格式化后的显示文本
+   */
+  formatDistance(distance) {
+    if (!this.isValidDistance(distance)) {
+      return this.INVALID_DISTANCE;
+    }
+    return `${distance} mm`;
+  }
+
+  /**
    * 更新传感器显示 (保留原有的锁定数据显示)
    */
   updateSensorDisplay(channel, sensorData) {
@@ -885,10 +948,13 @@ class SEBTApp {
     const distanceElement = gridElement.querySelector('.distance-display');
     if (!distanceElement) return;
 
-    // 更新距离显示
-    distanceElement.textContent = sensorData.distance > 0
-      ? `${sensorData.distance} mm`
-      : '--- mm';
+    // 更新距离显示（将2000视为无效值）
+    const distance = sensorData.distance;
+    if (distance === this.MAX_VALID_DISTANCE || !this.isValidDistance(distance)) {
+      distanceElement.textContent = this.INVALID_DISTANCE;
+    } else {
+      distanceElement.textContent = this.formatDistance(distance);
+    }
 
     // 更新样式 - 锁定事件使用原有逻辑
     if (sensorData.active) {
@@ -1008,9 +1074,8 @@ class SEBTApp {
     bluetoothElement.classList.remove('connected', 'searching', 'disconnected');
 
     const connected = !!status.connected;
-    const name = status?.device?.name || '主机';
     bluetoothElement.textContent = status.text ||
-      (connected ? `📡 主机BLE: 已连接 (${name})` : '📡 主机BLE: 未连接');
+      (connected ? `📡 主机BT: 已连接` : '📡 主机BT: 未连接');
 
     if (status.class) {
       const classes = status.class.split(' ');
@@ -1043,7 +1108,7 @@ class SEBTApp {
     const connected = !!status.connected;
     const name = status?.device?.name || '从机';
     slaveElement.textContent = status.text ||
-      (connected ? `🦶 从机BLE: 已连接 (${name})` : '🦶 从机BLE: 未连接');
+      (connected ? `🦶 从机BT: 已连接 (${name})` : '🦶 从机BT: 未连接');
 
     if (status.class) {
       const classes = status.class.split(' ');
@@ -1067,21 +1132,35 @@ class SEBTApp {
       // 处理8方向距离数据
       if (jsonData.distances && Array.isArray(jsonData.distances)) {
         jsonData.distances.forEach(([direction, distance]) => {
+          // 将无效值（2000）转换为invalid标记
+          const processedDistance = (distance === this.MAX_VALID_DISTANCE || !this.isValidDistance(distance)) 
+            ? this.INVALID_DISTANCE 
+            : distance;
+          
           const sensorData = {
+            channel: direction,
             direction: direction,
-            distance: distance,
+            distance: processedDistance,
             timestamp: jsonData.timestamp,
             source: 'bluetooth',
-            type: 'realtime'
+            type: 'realtime',
+            active: false
           };
 
-          this.updateSensorDisplay(sensorData);
+          // 更新传感器数据
+          this.sensorData.set(direction, sensorData);
+          
+          // 更新显示
+          this.updateSensorDisplay(direction, sensorData);
 
           // 如果是最小距离方向，更新高亮
-          if (direction === jsonData.minDir) {
-            this.updateMinDistanceHighlight(direction);
+          if (direction === jsonData.minDir && this.isValidDistance(processedDistance)) {
+            this.updateMinDistanceHighlight();
           }
         });
+        
+        // 更新最小距离高亮
+        this.updateMinDistanceHighlight();
       }
     } catch (error) {
       console.error('解析蓝牙数据失败:', error);
@@ -1401,7 +1480,7 @@ class SEBTApp {
         console.log('🔄 双击刷新BLE状态');
         if (!this.bleConnected) {
           this.updateBLEStatus({
-            text: '📱 主机BLE: 未连接',
+            text: '📱 主机BT: 未连接',
             class: 'disconnected'
           });
         }
@@ -1563,56 +1642,24 @@ class SEBTApp {
    * 显示蓝牙设备选择对话框
    */
   showBluetoothDeviceModal() {
-    console.log('📱 showBluetoothDeviceModal 被调用');
-    console.log('📱 this.bluetoothDeviceModal:', this.bluetoothDeviceModal);
-
     if (this.bluetoothDeviceModal) {
-      console.log('📱 模态框元素存在，准备显示');
-
       // 更新模态框标题
       const titleElement = document.getElementById('bluetooth-modal-title');
-      console.log('📱 titleElement:', titleElement);
       if (titleElement) {
         const isHost = this.bleTarget !== 'slave';
-        const prefix = isHost ? '📡 主机BLE' : '🦶 从机BLE';
+        const prefix = isHost ? '📡 主机BT' : '🦶 从机BT';
         titleElement.textContent = this.bleConnected ?
-          `${prefix} - 已连接` : `${prefix} - 设备选择`;
-        console.log('📱 标题已更新为:', titleElement.textContent);
+          `${prefix} - 已连接` : `${prefix} - 数据日志`;
       }
 
       // 更新连接状态区域显示
-      this.updateBluetoothModalConnectionStatus();
-
-      // 延迟初始化并自动开始BLE扫描
-      setTimeout(() => {
+      // 初始化模态框元素（只初始化一次）
+      if (!this.bleModalInitialized) {
         this.initializeBLEModalElements();
-
-        // 如果有已发现的设备，先显示它们，否则显示扫描提示
-        if (this.foundDevices && this.foundDevices.length > 0) {
-          console.log('📱 显示已发现的BLE设备:', this.foundDevices.length);
-          this.updateBLEDeviceList(); // 显示已发现的设备
-        } else {
-          this.updateBLEDeviceList('正在自动扫描BLE设备...'); // 显示扫描提示
-        }
-
-        // 自动开始BLE扫描
-        console.log('🔄 BLE模态框打开，自动开始BLE扫描');
-        this.startBLEScan();
-      }, 100);
+      }
 
       // 显示模态框
       this.bluetoothDeviceModal.classList.add('show');
-      console.log('📱 已添加.show类，当前classList:', this.bluetoothDeviceModal.classList);
-
-      // 强制检查样式
-      const computedStyle = window.getComputedStyle(this.bluetoothDeviceModal);
-      console.log('📱 模态框display样式:', computedStyle.display);
-      console.log('📱 模态框visibility样式:', computedStyle.visibility);
-
-      // 延迟初始化按钮元素，确保DOM已更新
-      setTimeout(() => {
-        this.initializeBLEModalElements();
-      }, 100);
     } else {
       console.error('❌ 蓝牙模态框元素不存在!');
     }
@@ -1632,21 +1679,22 @@ class SEBTApp {
   }
 
   /**
-   * 更新蓝牙模态框连接状态显示
+   * 更新锁定时长显示
    */
-  updateBluetoothModalConnectionStatus() {
-    const statusArea = document.getElementById('bluetooth-connection-status');
-    const deviceNameElement = document.getElementById('bluetooth-connected-device-name');
-    const indicatorElement = document.getElementById('bluetooth-connection-indicator');
+  updateLockTimeDisplay() {
+    const countDisplay = document.getElementById('lock-count-display');
+    const timeDisplay = document.getElementById('lock-time-display');
+    const slider = document.getElementById('lock-time-slider');
 
-    if (statusArea && deviceNameElement && indicatorElement) {
-      if (this.bleConnected && this.connectedDevice) {
-        statusArea.style.display = 'block';
-        deviceNameElement.textContent = this.connectedDevice.name || '未知设备';
-        indicatorElement.className = 'bluetooth-indicator connected';
-      } else {
-        statusArea.style.display = 'none';
-      }
+    if (countDisplay) {
+      countDisplay.textContent = this.LOCK_REQUIRED_COUNT;
+    }
+    if (timeDisplay) {
+      const timeInSeconds = (this.AUTO_LOCK_TIME_MS / 1000).toFixed(1);
+      timeDisplay.textContent = timeInSeconds;
+    }
+    if (slider) {
+      slider.value = this.LOCK_REQUIRED_COUNT;
     }
   }
 
@@ -2082,15 +2130,14 @@ class SEBTApp {
   hideBLEDeviceModal() {
     if (!this.bleDeviceModal) return;
 
-    console.log('📱 隐藏BLE设备管理对话框');
+    console.log('📱 隐藏BT设备管理对话框');
     this.bleDeviceModal.classList.remove('show');
 
-    // 停止扫描
-    this.stopBLEScan();
+    // BT管理器自动管理连接，不需要手动停止扫描
   }
 
   /**
-   * 设置BLE IPC监听器
+   * 设置BT IPC监听器
    */
   setupBLEIPCHandlers() {
     // 防止重复设置监听器
@@ -2101,45 +2148,34 @@ class SEBTApp {
 
     const { ipcRenderer } = require('electron');
 
-    // 监听连接成功
-    ipcRenderer.on('ble-connected', (event, device) => {
-      console.log('🔗 BLE连接成功:', device.name);
+    // 监听BT连接成功
+    ipcRenderer.on('bluetooth-connected', (event, data) => {
+      const device = data?.device || data;
+      console.log('🔗 BT连接成功:', device?.name || '未知设备');
       this.handleBLEConnectionChange(true, device);
-      this.addBLELog(`已连接到: ${device.name}`, 'success');
+      this.addBLELog(`已连接到: ${device?.name || 'HC-05'}`, 'success');
     });
 
     // 监听断开连接
-    ipcRenderer.on('ble-disconnected', (event) => {
-      console.log('🔌 BLE连接已断开');
+    ipcRenderer.on('bluetooth-disconnected', (event) => {
+      console.log('🔌 BT连接已断开');
       this.handleBLEConnectionChange(false, null);
-      this.addBLELog('BLE连接已断开', 'info');
+      this.addBLELog('BT连接已断开', 'info');
     });
 
-    // 监听连接丢失（自动检测）
-    ipcRenderer.on('ble-connection-lost', (event) => {
-      console.log('⚠️ BLE连接丢失，自动更新状态');
-      this.handleBLEConnectionChange(false, null);
-      this.addBLELog('检测到BLE连接丢失，已自动断开', 'warning');
-      this.addBLEDataLog('BLE连接丢失，设备可能已关闭或超出范围', 'error');
-    });
-
-    // 监听BLE设备发现
-    ipcRenderer.on('ble-device-found', (event, device) => {
-      console.log('🔍 IPC收到BLE设备发现:', device);
-      this.handleBLEDeviceFound(device);
-    });
-
-    // 监听BLE数据接收
-    ipcRenderer.on('ble-data-received', (event, data) => {
+    // 监听BT数据接收
+    ipcRenderer.on('bluetooth-data-received', (event, data) => {
       this.handleBLEData(data);
     });
 
-    // BLE诊断结果在需要时单独监听（在startBLEScan中）
+    // 监听BT错误
+    ipcRenderer.on('bluetooth-error', (event, error) => {
+      console.error('❌ BT错误:', error);
+      const message = error?.message || '未知错误';
+      this.addBLELog(`BT错误: ${message}`, 'error');
+    });
 
-    // 对于单向广播模式，我们不需要处理连接相关的错误
-    // 如果需要处理其他BLE相关错误，可以在这里添加
-
-    console.log('✅ BLE IPC监听器已设置');
+    console.log('✅ BT IPC监听器已设置');
   }
 
   /**
@@ -2167,11 +2203,10 @@ class SEBTApp {
     this.bleDataLogContainer = document.getElementById('bluetooth-data-log-container');
     this.bleClearDataLogBtn = document.getElementById('ble-clear-data-log-btn');
 
-    // 设置BLE IPC监听器（在元素初始化后立即设置，避免竞态条件）
+    // 设置BT IPC监听器（在元素初始化后立即设置，避免竞态条件）
     this.setupBLEIPCHandlers();
 
-    // 绑定设备列表事件
-    this.bindBLEDeviceListEvents();
+    // BT管理器自动连接，不需要设备列表事件
 
     // 绑定其他事件（只绑定一次）
     if (this.bleModalClose && !this.bleModalClose.hasBoundEvents) {
@@ -2202,60 +2237,8 @@ class SEBTApp {
    * 绑定BLE设备列表事件监听器
    */
   bindBLEDeviceListEvents() {
-    if (!this.bleDeviceList) return;
-
-    // 如果已经绑定过，先移除所有现有的事件监听器
-    if (this.bleDeviceList._boundEvents) {
-      // 复制一份监听器列表，然后逐个移除
-      const listeners = this.bleDeviceList._eventListeners || [];
-      listeners.forEach(({ type, listener, options }) => {
-        this.bleDeviceList.removeEventListener(type, listener, options);
-      });
-      this.bleDeviceList._eventListeners = [];
-    }
-
-    // 处理连接按钮点击
-    const clickHandler = (event) => {
-      if (event.target.classList.contains('ble-connect-action-btn')) {
-        event.stopPropagation();
-        const deviceId = event.target.dataset.deviceId;
-        console.log('🔗 点击连接按钮，设备ID:', deviceId);
-        if (deviceId) {
-          this.connectToSelectedBLEDeviceDirect(deviceId);
-        }
-      }
-    };
-
-    // 处理设备项悬停效果
-    const mouseEnterHandler = (event) => {
-      const deviceItem = event.target.closest('.ble-device-item');
-      if (deviceItem) {
-        deviceItem.classList.add('active');
-      }
-    };
-
-    const mouseLeaveHandler = (event) => {
-      const deviceItem = event.target.closest('.ble-device-item');
-      if (deviceItem) {
-        deviceItem.classList.remove('active');
-      }
-    };
-
-    // 添加事件监听器
-    this.bleDeviceList.addEventListener('click', clickHandler);
-    this.bleDeviceList.addEventListener('mouseenter', mouseEnterHandler, true);
-    this.bleDeviceList.addEventListener('mouseleave', mouseLeaveHandler, true);
-
-    // 保存监听器引用以便后续移除
-    this.bleDeviceList._eventListeners = [
-      { type: 'click', listener: clickHandler, options: false },
-      { type: 'mouseenter', listener: mouseEnterHandler, options: true },
-      { type: 'mouseleave', listener: mouseLeaveHandler, options: true }
-    ];
-
-    // 标记为已绑定
-    this.bleDeviceList._boundEvents = true;
-    console.log('✅ BLE设备列表事件监听器已绑定');
+    // BT管理器自动连接，不需要设备列表事件监听器
+    // 此方法保留以兼容现有代码，但不执行任何操作
   }
 
   /**
@@ -2270,83 +2253,20 @@ class SEBTApp {
   /**
    * 开始BLE扫描
    */
-  startBLEScan() {
-    console.log('🔍 开始BLE设备扫描');
-
-    // 防止重复诊断
-    if (this.bleDiagnosing) {
-      console.log('⚠️ BLE诊断正在进行中，跳过重复诊断');
-      return;
-    }
-    this.bleDiagnosing = true;
-
-    // 不清空已有的设备列表，保持显示已发现的设备
-    // this.foundDevices = [];
-    this.updateBLEDeviceList('正在扫描BLE设备，请稍候...');
-
-    // 首先检查BLE库状态
-    this.addBLELog('正在检查BLE适配器状态...', 'info');
-
-    const { ipcRenderer } = require('electron');
-
-    // 发送诊断请求
-    ipcRenderer.send('ble-diagnose');
-
-    // 监听诊断结果
-    ipcRenderer.once('ble-diagnosis-result', (event, result) => {
-      console.log('🔍 BLE诊断结果:', result);
-      this.bleDiagnosing = false; // 重置诊断标志
-
-      // 检查BLE适配器状态
-      if (result.nobleState !== 'poweredOn') {
-        console.error('❌ BLE适配器未开启');
-        this.addBLELog('BLE适配器未开启，请启用蓝牙', 'error');
-        this.updateBLEDeviceList('❌ BLE适配器未开启，请启用蓝牙并重试');
-        return;
-      }
-
-      this.addBLELog('BLE适配器正常，开始扫描设备...', 'info');
-      // 开始扫描
-      this.updateBLEDeviceList('正在扫描BLE设备，请稍候...');
-      ipcRenderer.send('ble-start-scan');
-
-      // 8秒后自动停止扫描
-      setTimeout(() => {
-        this.stopBLEScan();
-      }, 8000);
-    });
-  }
-
-  /**
-   * 停止BLE扫描
-   */
-  stopBLEScan() {
-    console.log('🛑 停止BLE设备扫描');
-    const { ipcRenderer } = require('electron');
-    ipcRenderer.send('ble-stop-scan');
-
-    // 更新UI状态
-    if (this.foundDevices.length > 0) {
-      this.updateBLEDeviceList();
-      this.addBLELog(`扫描完成，发现${this.foundDevices.length}个BLE设备`, 'success');
-    } else {
-      this.updateBLEDeviceList('未发现BLE设备，请检查设备是否开启');
-      this.addBLELog('扫描完成，未发现BLE设备', 'warning');
-    }
-  }
+  // BT管理器自动连接，不需要手动扫描方法
 
   /**
    * 刷新BLE扫描（停止当前扫描并重新开始）
    */
 
   /**
-   * 断开BLE连接
+   * 断开BT连接
    */
   disconnectBLE() {
-    console.log('🔌 断开BLE连接');
+    console.log('🔌 断开BT连接');
     const { ipcRenderer } = require('electron');
-    ipcRenderer.send('ble-disconnect');
-    this.addBLELog('正在断开BLE连接...', 'info');
+    ipcRenderer.send('bt-disconnect');
+    this.addBLELog('正在断开BT连接...', 'info');
   }
 
   /**
@@ -2481,69 +2401,11 @@ class SEBTApp {
   }
 
   /**
-   * 更新BLE设备列表显示
+   * 更新BLE设备列表显示（BT模式下不再需要设备列表）
    */
   updateBLEDeviceList(scanningMessage = null) {
-    if (!this.bleDeviceList) return;
-
-    console.log('🔄 updateBLEDeviceList 被调用，foundDevices:', this.foundDevices.length, 'scanningMessage:', scanningMessage);
-
-    let html = '';
-
-    if (scanningMessage) {
-      html = `
-        <div class="ble-device-item scanning">
-          <div class="ble-device-content">
-            <div class="ble-device-info">
-              <div class="ble-device-name">${scanningMessage}</div>
-              <div class="ble-device-id">
-                <span class="ble-scan-spinner"></span>
-                请稍候
-              </div>
-            </div>
-          </div>
-        </div>
-      `;
-    } else if (this.foundDevices.length === 0) {
-      html = `
-        <div class="ble-device-item">
-          <div class="ble-device-content">
-            <div class="ble-device-info">
-              <div class="ble-device-name">未发现BLE设备</div>
-              <div class="ble-device-id">点击"开始扫描"发现周围的BLE设备</div>
-            </div>
-          </div>
-        </div>
-      `;
-    } else {
-      html = this.foundDevices.map(device => `
-        <div class="ble-device-item"
-             data-device-id="${device.id}">
-          <div class="ble-device-content">
-            <div class="ble-device-info">
-              <div class="ble-device-name">${device.name || '未知设备'}</div>
-              <div class="ble-device-id">
-                ${device.address}
-                ${device.rssi ? ` (信号: ${device.rssi}dB)` : ''}
-                ${device.connectable ? ' [可连接]' : ''}
-              </div>
-            </div>
-          </div>
-          <div class="ble-device-actions">
-            <button class="ble-connect-action-btn" data-device-id="${device.id}">连接</button>
-          </div>
-        </div>
-      `).join('');
-    }
-
-    this.bleDeviceList.innerHTML = html;
-
-    // 重新绑定设备列表事件监听器，因为innerHTML清除了之前的监听器
-    // 先清除标记，允许重新绑定
-    if (this.bleDeviceList) {
-      this.bleDeviceList._boundEvents = false;
-    }
-    this.bindBLEDeviceListEvents();
+    // BT管理器自动连接，不需要显示设备列表
+    // 此方法保留以兼容现有代码，但不执行任何操作
   }
 
   /**
@@ -2613,20 +2475,13 @@ class SEBTApp {
     }
 
     if (connected) {
-      this.stopBLEScan();
       // 连接成功时清除所有日志并添加连接成功消息
       this.clearBLEDataLogCompletely();
-      this.addBLEDataLog(`已连接到 ${device?.name || 'SEBT-Host'}，等待数据...`, 'success');
+      this.addBLEDataLog(`已连接到 ${device?.name || 'SEBT-Host-001'}，等待数据...`, 'success');
     } else {
       this.cancelBLEMeasurementCollection();
-      this.addBLEDataLog('连接已断开，正在重新扫描...', 'warning');
-      // 断开连接时重新开始扫描
-      setTimeout(() => {
-        if (!this.bleConnected) { // 确保当前没有连接
-          console.log('🔄 检测到断开，重新开始BLE扫描');
-          this.startBLEScan();
-        }
-      }, 2000);
+      this.addBLEDataLog('连接已断开，BT管理器将自动重连...', 'warning');
+      // BT管理器会自动重连，不需要手动操作
     }
 
     this.updateBLEConnectionStatus();
@@ -2635,51 +2490,7 @@ class SEBTApp {
   /**
    * 处理BLE设备发现
    */
-  handleBLEDeviceFound(device) {
-    console.log('🔍 处理BLE设备发现:', device);
-
-    // 添加设备到UI列表
-    this.addBluetoothDeviceToList(device);
-
-    // 对于单向广播模式，不需要主动连接
-    // ESP32会定期广播数据，我们只需要等待接收即可
-    console.log(`📻 单向广播模式：设备 ${device.name} 已发现，等待接收广播数据`);
-
-    // 刷新设备列表显示
-    this.updateBLEDeviceList();
-
-    // 更新连接状态为"已发现设备"
-    this.handleBLEConnectionChange(true, device);
-    this.addBLELog(`发现SEBT设备: ${device.name}`, 'success');
-  }
-
-  /**
-   * 连接到发现的BLE设备
-   */
-  async connectToFoundBLEDevice(device) {
-    console.log('🔗 连接到发现的BLE设备:', device.name);
-
-    try {
-      const { ipcRenderer } = require('electron');
-      ipcRenderer.send('ble-connect', device.address || device.id);
-
-      // 等待连接结果
-      ipcRenderer.once('ble-connected', () => {
-        console.log('✅ BLE连接成功');
-        this.handleBLEConnectionChange(true, device);
-        this.addBLELog(`已连接到: ${device.name}`, 'success');
-      });
-
-      ipcRenderer.once('ble-error', (event, error) => {
-        console.error('❌ BLE连接失败:', error);
-        this.addBLELog(`连接失败: ${error.message}`, 'error');
-      });
-
-    } catch (error) {
-      console.error('❌ BLE连接异常:', error);
-      this.addBLELog(`连接异常: ${error.message}`, 'error');
-    }
-  }
+  // BT管理器自动连接，不需要设备发现和手动连接方法
 
   /**
    * 处理BLE数据接收
@@ -2760,13 +2571,17 @@ class SEBTApp {
    */
   handleHostBroadcast(payload) {
     const timestamp = payload.timestamp || Date.now();
-    const distancesArray = new Array(8).fill(9999);
+    const distancesArray = new Array(8).fill(this.INVALID_DISTANCE);
 
     if (Array.isArray(payload.distances)) {
       payload.distances.forEach(([dir, dist]) => {
         if (typeof dir === 'number' && dir >= 0 && dir < 8 && typeof dist === 'number') {
-          distancesArray[dir] = dist;
-          this.updateSensorData(dir, dist, 'hardware');
+          // 将无效值（2000）转换为invalid标记
+          const processedDist = (dist === this.MAX_VALID_DISTANCE || !this.isValidDistance(dist)) 
+            ? this.INVALID_DISTANCE 
+            : dist;
+          distancesArray[dir] = processedDist;
+          this.updateSensorData(dir, processedDist, 'hardware');
           const sensorData = this.sensorData.get(dir);
           if (sensorData) {
             sensorData.timestamp = timestamp;
@@ -2783,16 +2598,21 @@ class SEBTApp {
     let minDir = payload.currentMinDirection;
     let minDist = payload.currentMinDistance;
     if (minDir === undefined || minDir === -1) {
-      let calcMin = 9999;
+      let calcMin = Infinity;
       let calcDir = -1;
       distancesArray.forEach((d, idx) => {
-        if (d < calcMin) {
+        if (this.isValidDistance(d) && d < calcMin) {
           calcMin = d;
           calcDir = idx;
         }
       });
       minDir = calcDir;
       minDist = calcMin;
+    }
+
+    // 检查并执行自动锁定（基于连续次数）
+    if (minDir >= 0 && this.isValidDistance(minDist)) {
+      this.checkAutoLock(minDir, minDist);
     }
 
     // 记录主机数据日志
@@ -3018,17 +2838,16 @@ class SEBTApp {
   }
 
   /**
-   * 检查并执行自动锁定
+   * 检查并执行自动锁定（基于连续次数）
    */
   checkAutoLock(currentMinDirection, currentMinDistance) {
-    const now = Date.now();
-
     // 检查方向是否改变
     if (this.currentMinDirection !== currentMinDirection) {
-      // 方向改变，重置计时器
+      // 方向改变，重置连续计数
       this.currentMinDirection = currentMinDirection;
-      this.minDirectionStartTime = now;
-      console.log(`🔄 最短方向改变为: ${directionMap[currentMinDirection].displayName}，开始计时`);
+      this.minDirectionConsecutiveCount = 1;
+      this.minDirectionStartTime = Date.now();
+      console.log(`🔄 最短方向改变为: ${directionMap[currentMinDirection].displayName}，开始计数`);
       return;
     }
 
@@ -3037,15 +2856,20 @@ class SEBTApp {
       return;
     }
 
-    // 检查持续时间
-    const duration = now - this.minDirectionStartTime;
-    if (duration >= this.AUTO_LOCK_TIME_MS) {
+    // 增加连续计数
+    this.minDirectionConsecutiveCount++;
+
+    // 检查是否达到锁定所需的连续次数
+    if (this.minDirectionConsecutiveCount >= this.LOCK_REQUIRED_COUNT) {
       // 自动锁定
       this.lockDirection(currentMinDirection, currentMinDistance);
-      console.log(`🔒 前端自动锁定: ${directionMap[currentMinDirection].displayName} - ${currentMinDistance}mm (持续${duration}ms)`);
+      const duration = Date.now() - this.minDirectionStartTime;
+      console.log(`🔒 前端自动锁定: ${directionMap[currentMinDirection].displayName} - ${currentMinDistance}mm (连续${this.minDirectionConsecutiveCount}次，持续${duration}ms)`);
       this.addLog(`🔒 前端自动锁定: ${directionMap[currentMinDirection].displayName} - ${currentMinDistance}mm`, 'success');
+      this.minDirectionConsecutiveCount = 0; // 重置计数
     } else {
-      console.log(`⏱️ 方向锁定倒计时: ${directionMap[currentMinDirection].displayName} (${Math.round(duration/1000)}/${this.AUTO_LOCK_TIME_MS/1000}s)`);
+      const progress = (this.minDirectionConsecutiveCount / this.LOCK_REQUIRED_COUNT * 100).toFixed(0);
+      console.log(`⏱️ 方向锁定进度: ${directionMap[currentMinDirection].displayName} (${this.minDirectionConsecutiveCount}/${this.LOCK_REQUIRED_COUNT}次, ${progress}%)`);
     }
   }
 
@@ -3069,13 +2893,13 @@ class SEBTApp {
 
     // 从所有方向中找到未完成测距的方向中距离最短的一个
     let closestChannel = -1;
-    let closestDistance = 9999;
+    let closestDistance = Infinity;
 
     for (let channel = 0; channel < 8; channel++) {
       // 只考虑未完成测距的方向
       if (!this.completedDirections.has(channel)) {
         const distance = distances[channel];
-        if (distance > 0 && distance < 9999 && distance < closestDistance) {
+        if (this.isValidDistance(distance) && distance < closestDistance) {
           closestDistance = distance;
           closestChannel = channel;
         }
@@ -3159,6 +2983,7 @@ class SEBTApp {
     // 重置自动锁定状态
     this.currentMinDirection = -1;
     this.minDirectionStartTime = 0;
+    this.minDirectionConsecutiveCount = 0;
 
     // 重置所有卡片的UI状态
     this.gridElements.forEach((element, channel) => {

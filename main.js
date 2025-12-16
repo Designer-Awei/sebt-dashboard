@@ -38,52 +38,34 @@ function createWindow() {
 }
 
 /**
- * 注册IPC事件，兼容旧事件名称
+ * 注册IPC事件
  */
 function registerIPC() {
-  // 扫描相关事件（兼容BLE和BT）
-  const startScanChannels = ['bt-start-scan', 'ble-start-scan', 'bluetooth-start-scan', 'start-ble-scan', 'start-bt-scan'];
-  startScanChannels.forEach((channel) => {
-    ipcMain.on(channel, () => {
-      console.log(`📡 主进程收到扫描请求: ${channel}`);
-      btManager?.startScanning();
-    });
+  // 扫描相关事件
+  ipcMain.on('bt-start-scan', () => {
+    console.log('📡 主进程收到BT扫描请求');
+    btManager?.startScanning();
   });
 
-  const stopScanChannels = ['bt-stop-scan', 'ble-stop-scan', 'bluetooth-stop-scan'];
-  stopScanChannels.forEach((channel) => {
-    ipcMain.on(channel, () => {
-      btManager?.stopScanning();
-    });
+  ipcMain.on('bt-stop-scan', () => {
+    btManager?.stopScanning();
   });
 
   // 连接相关事件
-  const connectChannels = ['bt-connect', 'ble-connect', 'bluetooth-connect', 'connect-to-ble-device', 'connect-to-bt-device'];
-  connectChannels.forEach((channel) => {
-    ipcMain.on(channel, (_event, deviceId) => {
-      console.log(`📡 主进程收到连接请求: ${channel}, 设备ID: ${deviceId}`);
-      btManager?.connect(deviceId);
-    });
+  ipcMain.on('bt-connect', (_event, deviceId) => {
+    console.log(`📡 主进程收到BT连接请求, 设备ID: ${deviceId}`);
+    btManager?.connect(deviceId);
   });
 
   // 断开连接事件
-  const disconnectChannels = ['bt-disconnect', 'ble-disconnect', 'bluetooth-disconnect'];
-  disconnectChannels.forEach((channel) => {
-    ipcMain.on(channel, () => {
-      btManager?.disconnect();
-    });
+  ipcMain.on('bt-disconnect', () => {
+    btManager?.disconnect();
   });
 
   // 诊断和状态查询
   ipcMain.on('bt-diagnose', (event) => {
     const report = btManager?.diagnose() || {};
     event.reply('bt-diagnosis-result', report);
-  });
-
-  ipcMain.on('ble-diagnose', (event) => {
-    // 兼容旧事件名称
-    const report = btManager?.diagnose() || {};
-    event.reply('ble-diagnosis-result', report);
   });
 
   ipcMain.on('bluetooth-get-status', (event) => {
@@ -95,12 +77,6 @@ function registerIPC() {
   ipcMain.on('bt-send-command', (event, command) => {
     console.warn('[BT] 经典蓝牙SPP模式不支持命令发送:', command);
     event.reply?.('bt-command-sent', { success: false, error: 'command-not-supported' });
-  });
-
-  ipcMain.on('ble-send-command', (event, command) => {
-    // 兼容旧事件名称
-    console.warn('[BT] 经典蓝牙SPP模式不支持命令发送:', command);
-    event.reply?.('ble-command-sent', { success: false, error: 'command-not-supported' });
   });
 }
 
