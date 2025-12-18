@@ -326,7 +326,7 @@
         }
 
         .lock-time-info span {
-            font-weight: 600;
+            font-weight: 500;
             color: #1e293b;
         }
 
@@ -424,6 +424,155 @@
             font-family: monospace;
             font-size: 0.7rem;
             line-height: 1.3;
+        }
+
+        /* 压力阈值设置区域 */
+        #slave-pressure-threshold-settings {
+            margin-top: 15px;
+            padding: 15px;
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+        }
+
+        #slave-pressure-threshold-settings h4 {
+            margin: 0 0 15px 0;
+            color: #333;
+            font-size: 0.9rem;
+        }
+
+        .pressure-threshold-container {
+            margin-top: 0;
+        }
+
+        .pressure-threshold-slider-container {
+            position: relative;
+            margin-bottom: 20px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            user-select: none;
+        }
+
+        /* 双滑块轨道 */
+        .pressure-threshold-track {
+            position: absolute;
+            width: 100%;
+            height: 6px;
+            background: #ddd;
+            border-radius: 3px;
+            top: 50%;
+            transform: translateY(-50%);
+            cursor: pointer;
+        }
+
+        /* 选中的范围 */
+        .pressure-threshold-range {
+            position: absolute;
+            height: 6px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 3px;
+            top: 50%;
+            transform: translateY(-50%);
+            cursor: pointer;
+        }
+
+        /* 滑块handle */
+        .pressure-threshold-handle {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            cursor: grab;
+            border: 2px solid #fff;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+            top: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 3;
+            user-select: none;
+        }
+
+        .pressure-threshold-handle:active {
+            cursor: grabbing;
+        }
+
+        .pressure-threshold-handle:hover {
+            transform: translate(-50%, -50%) scale(1.1);
+        }
+
+        /* 滑块提示框 */
+        .pressure-threshold-handle-tooltip {
+            position: absolute;
+            bottom: 25px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            white-space: nowrap;
+            opacity: 0;
+            transition: opacity 0.2s;
+            pointer-events: none;
+        }
+
+        .pressure-threshold-handle:hover .pressure-threshold-handle-tooltip {
+            opacity: 1;
+        }
+
+        /* 最小值滑块特殊样式 */
+        #pressure-min-handle {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+        }
+
+        /* 最大值滑块特殊样式 */
+        #pressure-max-handle {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+
+        .pressure-threshold-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 13px;
+            color: #64748b;
+            margin-top: 10px;
+        }
+
+        .pressure-threshold-info span {
+            font-weight: 500;
+            color: #1e293b;
+        }
+
+        .pressure-threshold-info div {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* 最小值滑块特殊样式 */
+        #pressure-min-slider {
+            pointer-events: auto;
+        }
+
+        #pressure-min-slider::-webkit-slider-thumb {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+        }
+
+        /* 最大值滑块特殊样式 */
+        #pressure-max-slider {
+            pointer-events: auto;
+        }
+
+        #pressure-max-slider::-webkit-slider-thumb {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+
+        /* 双滑块交互优化 */
+        .pressure-threshold-slider-container {
+            position: relative;
         }
 
         /* BLE对话框头部 */
@@ -952,8 +1101,9 @@
                 <h1>SEBT 平衡测试系统</h1>
                 <p>监测平衡测试数据</p>
                 <div class="header-info">
-                    <div id="slave-status" class="bluetooth-status bluetooth-clickable">🦶 从机BLE: 未连接</div>
-                    <div id="bluetooth-status" class="bluetooth-status bluetooth-clickable">📱 主机BLE: 未连接</div>
+                    <div id="slave-status" class="bluetooth-status bluetooth-clickable">🦶 从机状态</div>
+                    <div id="bluetooth-status" class="bluetooth-status bluetooth-clickable">📱 主机状态</div>
+                    <div id="ble-driver-btn" class="bluetooth-status bluetooth-clickable" style="margin-top: 8px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; cursor: pointer;">🔗 BLE驱动连接</div>
                 </div>
             </div>
 
@@ -1009,8 +1159,8 @@
                 <button id="bluetooth-modal-close" class="bluetooth-modal-close-btn" title="关闭">✕</button>
             </div>
 
-            <!-- 锁定时长设置区域 -->
-            <div class="lock-time-settings">
+            <!-- 锁定时长设置区域（主机模式） -->
+            <div id="host-lock-time-settings" class="lock-time-settings">
                 <h4>锁定时长设置</h4>
                 <div class="lock-time-slider-container">
                     <input type="range" id="lock-time-slider" class="lock-time-slider" min="5" max="30" value="10" step="1">
@@ -1029,12 +1179,60 @@
                 </div>
             </div>
 
+            <!-- 稳定时长设置区域（从机模式） -->
+            <div id="slave-stable-time-settings" class="lock-time-settings" style="display: none;">
+                <h4>稳定时长设置</h4>
+                <div class="lock-time-slider-container">
+                    <input type="range" id="stable-time-slider" class="lock-time-slider" min="5" max="30" value="10" step="1">
+                </div>
+                <div class="lock-time-info">
+                    <div>
+                        <span>连续次数:</span>
+                        <span id="stable-count-display">10</span>
+                        <span>次</span>
+                    </div>
+                    <div>
+                        <span>稳定时间:</span>
+                        <span id="stable-time-display">3.0</span>
+                        <span>秒</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 压力阈值设置区域（从机模式） -->
+            <div id="slave-pressure-threshold-settings" style="display: none;">
+                <h4>压力阈值设置</h4>
+                <div class="pressure-threshold-container">
+                    <div class="pressure-threshold-slider-container" id="pressure-slider-container">
+                        <div class="pressure-threshold-track"></div>
+                        <div class="pressure-threshold-range" id="pressure-range"></div>
+                        <div class="pressure-threshold-handle" id="pressure-min-handle" data-value="500">
+                            <div class="pressure-threshold-handle-tooltip" id="pressure-min-tooltip">500</div>
+                        </div>
+                        <div class="pressure-threshold-handle" id="pressure-max-handle" data-value="3000">
+                            <div class="pressure-threshold-handle-tooltip" id="pressure-max-tooltip">3000</div>
+                        </div>
+                    </div>
+                    <div class="pressure-threshold-info">
+                        <div>
+                            <span>最小阈值:</span>
+                            <span id="pressure-min-display">500</span>
+                        </div>
+                        <div>
+                            <span>最大阈值:</span>
+                            <span id="pressure-max-display">3000</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- 设备扫描区域（BT模式下已隐藏，自动连接） -->
             <div id="bluetooth-scan-section" style="display: none;">
                 <div class="bluetooth-device-list" id="bluetooth-device-list"></div>
             </div>
 
-            <div class="bluetooth-data-log-section">
+            <!-- 主机发送数据日志已移至BLE驱动界面查看 -->
+            <div class="bluetooth-data-log-section" style="display: none;">
                 <h4>主机发送数据日志</h4>
                 <div class="bluetooth-data-log-container" id="bluetooth-data-log-container">
                     <div class="bluetooth-log-entry info">等待主机连接...</div>

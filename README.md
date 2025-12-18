@@ -1,21 +1,22 @@
 # SEBT 平衡测试系统
 
-基于 Electron 的桌面平衡测试仪表板应用，采用 **ESP32-C3 + HC-05经典蓝牙** 架构，通过TCA9548A管理8路ToF传感器，实现实时数据采集和可视化。
+基于 Electron 的桌面平衡测试仪表板应用，采用 **ESP32-C3 + BLE + WebSocket Bridge** 架构，通过TCA9548A管理8路ToF传感器，实现实时数据采集和可视化。
 
 ## 📋 版本信息
 
-**当前版本**: v5.0 - ESP32-C3 + HC-05经典蓝牙架构  
-**硬件平台**: ESP32-C3 (400KB RAM, 160MHz)  
-**通信方式**: HC-05经典蓝牙SPP串口通信  
+**当前版本**: v6.0 - ESP32-C3 + BLE + WebSocket Bridge架构
+**硬件平台**: ESP32-C3 (400KB RAM, 160MHz)
+**通信方式**: BLE Notify + WebSocket Bridge
 **状态**: ✅ 生产就绪
 
 ## 🎯 核心功能
 
 - ✅ **8方向ToF传感器**: 通过TCA9548A多路复用器管理8个VL53L1X传感器
-- ✅ **经典蓝牙通信**: HC-05模块提供稳定的SPP串口通信
-- ✅ **自动串口扫描**: 测试脚本自动识别并连接蓝牙串口（优先COM9）
+- ✅ **BLE原生通信**: ESP32-C3直接通过BLE Notify发送传感器数据
+- ✅ **WebSocket Bridge**: Electron主进程创建WebSocket服务器作为数据中转
+- ✅ **Web Bluetooth API**: 浏览器直接连接BLE设备，无需串口通信
 - ✅ **实时数据可视化**: 23字节二进制数据包，每300ms更新一次
-- ✅ **大内存支持**: ESP32-C3的400KB RAM完全支持8个传感器对象
+- ✅ **跨进程通信**: BLE → 浏览器 → WebSocket → Electron → UI
 
 ## 🔧 硬件连接
 
@@ -25,13 +26,16 @@
 |------|-------------|------|
 | TCA9548A SDA | GPIO 8 | I2C数据线 |
 | TCA9548A SCL | GPIO 9 | I2C时钟线 |
-| HC-05 TXD | GPIO 3 | ESP32接收 |
-| HC-05 RXD | GPIO 4 | ESP32发送 |
-| HC-05 VCC | 5V | 电源（不需要EN引脚） |
-| HC-05 GND | GND | 地 |
+| LED状态指示 | GPIO 10 | 可选，用于连接状态指示 |
 
 ### 8个VL53L1X传感器
 通过TCA9548A的8个通道连接（SC0-SD0到SC7-SD7）
+
+### BLE配置
+- **Service UUID**: `0000aaaa-0000-1000-8000-00805f9b34fb`
+- **Characteristic UUID**: `0000bbbb-0000-1000-8000-00805f9b34fb`
+- **设备名称**: `SEBT-Host-001`
+- **特征属性**: `READ | NOTIFY`
 
 ## ⚙️ 配置步骤
 
@@ -43,42 +47,31 @@
 - USB Mode：Hardware CDC and JTAG
 - 上传速度：921600
 
-### 2. HC-05配置（使用Arduino Nano）
+### 2. 安装NimBLE-Arduino库
 
-**硬件连接**（HC-05与Nano共用电源）：
-- HC-05 VCC → Nano 5V
-- HC-05 GND → Nano GND
-- HC-05 TXD → Nano D3
-- HC-05 RXD → Nano D4
-- HC-05 EN → Nano D2（可选）
-
-**配置流程**：
-1. 上传 `hardware core/hc05-config-nano.ino` 到Arduino Nano
-2. 打开串口监视器（115200波特率，Both NL & CR）
-3. 断开HC-05电源，按住按钮，上电，松开按钮（进入AT模式）
-4. 发送以下AT命令：
-
-```bash
-AT                    # 测试AT模式
-AT+NAME=SEBT-Host-001 # 设置设备名称
-AT+PSWD="1234"        # 设置配对密码（注意需要引号）
-AT+ROLE=0             # 设置为从机模式
-AT+UART=9600,0,0      # 设置波特率9600
-AT+NAME?              # 查询确认配置
-```
-
-5. 配置完成后，断开HC-05电源，重新上电（不按按钮）退出AT模式
+在Arduino IDE中安装NimBLE-Arduino库：
+1. 打开Arduino IDE
+2. 工具 → 管理库
+3. 搜索"NimBLE-Arduino"
+4. 安装最新版本
 
 ### 3. 烧录ESP32-C3固件
 
-上传 `hardware core/test-bt-esp32c3.ino` 到ESP32-C3
+1. 打开 `hardware core/master-ble.ino`
+2. 选择正确的开发板和端口
+3. 点击上传
+4. 打开串口监视器查看启动日志
 
-### 4. Windows配对HC-05
+### 4. BLE设备连接测试
 
-1. 打开"设置" > "蓝牙和其他设备"
-2. 添加设备 > 蓝牙
-3. 找到"SEBT-Host-001"，输入密码：**1234**
-4. **重要**：配对后，点击设备 > 更多蓝牙选项 > 服务，确保**"串行端口(SPP)"已勾选**
+ESP32-C3上电后会自动：
+- 初始化8个VL53L1X传感器
+- 启动BLE广播
+- 等待客户端连接
+
+**查看BLE设备**：
+- Windows: 设置 → 设备 → 添加蓝牙或其他设备
+- 查找设备名称：`SEBT-Host-001`
 5. 等待5-10秒，Windows会创建COM端口（COM8、COM9）
 
 ### 5. 运行测试
@@ -113,17 +106,24 @@ npm run check-spp
 - **最小距离**: 16位无符号整数（mm）
 - **8方向距离**: 每个方向2字节，共16字节
 
+### BLE通信特性
+
+- **通信协议**: BLE Notify（无连接确认）
+- **发送间隔**: 300ms
+- **数据可靠性**: 硬件端只在有BLE客户端连接时发送数据
+
 ## ⚠️ 重要注意事项
 
-### 1. SPP服务必须手动启用
-- Windows创建COM端口 ≠ SPP服务已连接
-- 必须在蓝牙设置中手动启用"串行端口(SPP)"服务
-- 这是最常见的连接失败原因
+### 1. BLE连接要求
+- **浏览器支持**: 需要支持Web Bluetooth API的浏览器（Chrome/Edge）
+- **HTTPS要求**: 在HTTP环境下需要用户手势触发BLE请求
+- **权限确认**: 首次连接时需要用户确认BLE设备访问权限
 
-### 2. 端口选择
-- **COM9（传出端口/SPP Dev）** ✅ **推荐使用** - 可以接收数据
-- COM8（传入端口）虽然可以打开，但未收到数据
-- 测试脚本已自动优先使用COM9
+### 2. BLE设备发现
+- ESP32-C3上电后自动开始广播
+- 设备名称：`SEBT-Host-001`
+- 广播间隔：BLE标准间隔
+- 连接成功后开始发送传感器数据
 
 ### 3. 硬件连接检查
 - HC-05 TXD → ESP32 GPIO 3 (RX) ⚠️ 注意方向

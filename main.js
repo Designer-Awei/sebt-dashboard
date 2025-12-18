@@ -1,8 +1,14 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
-const { BTManager } = require('./bt-manager');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const http = require('http');
+const WebSocket = require('ws');
+const path = require('path');
+const fs = require('fs');
+const { BLEManager } = require('./ble-manager');
 
 let mainWindow;
 let btManager;
+let httpServer;
+let wss;
 
 /**
  * 创建主窗口
@@ -28,6 +34,8 @@ function createWindow() {
 
   window.on('closed', () => {
     mainWindow = null;
+    // 窗口关闭时清理WebSocket服务器
+    cleanupWebSocketServer();
   });
 
   if (process.env.NODE_ENV === 'development') {
@@ -35,6 +43,172 @@ function createWindow() {
   }
 
   return window;
+}
+
+/**
+ * 创建WebSocket服务器
+ */
+function createWebSocketServer() {
+  const PORT = 3000;
+
+  // 检查是否已经创建了服务器
+  if (httpServer || wss) {
+    console.log('📡 WebSocket服务器已在运行');
+    return Promise.resolve();
+  }
+
+  // 检查端口是否被占用
+  const net = require('net');
+  const testServer = net.createServer();
+
+  return new Promise((resolve, reject) => {
+    testServer.listen(PORT, (err) => {
+      testServer.close((closeErr) => {
+        if (err) {
+          console.error(`❌ 端口${PORT}已被占用:`, err.message);
+          reject(new Error(`端口${PORT}已被占用`));
+          return;
+        }
+
+        console.log(`✅ 端口${PORT}可用，开始创建WebSocket服务器`);
+
+        // 创建HTTP服务器用于提供静态文件
+        httpServer = http.createServer((req, res) => {
+          if (req.url === '/' || req.url === '/ble-driver.html') {
+            const filePath = path.join(__dirname, 'public', 'ble-driver.html');
+            fs.readFile(filePath, (err, data) => {
+              if (err) {
+                res.writeHead(404);
+                res.end('File not found');
+                return;
+              }
+              res.writeHead(200, { 'Content-Type': 'text/html' });
+              res.end(data);
+            });
+          } else if (req.url === '/favicon.ico') {
+            // 返回空的favicon.ico以避免404错误
+            res.writeHead(200, { 'Content-Type': 'image/x-icon' });
+            res.end();
+          } else {
+            res.writeHead(404);
+            res.end('Not found');
+          }
+        });
+
+        // 处理服务器错误
+        httpServer.on('error', (error) => {
+          console.error('❌ HTTP服务器错误:', error);
+          cleanupWebSocketServer();
+        });
+
+        // 启动HTTP服务器
+        httpServer.listen(PORT, () => {
+          console.log(`📡 WebSocket服务器已启动: http://localhost:${PORT}`);
+        });
+
+        // 创建WebSocket服务器
+        wss = new WebSocket.Server({ server: httpServer });
+
+        // 处理WebSocket服务器错误
+        wss.on('error', (error) => {
+          console.error('❌ WebSocket服务器错误:', error);
+          cleanupWebSocketServer();
+        });
+
+        // 存储所有连接的WebSocket客户端
+        const wsClients = new Set();
+
+        wss.on('connection', (ws) => {
+          console.log('🔗 浏览器BLE驱动已连接');
+          wsClients.add(ws);
+
+          // 心跳保活
+          const pingInterval = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.ping();
+            }
+          }, 30000); // 每30秒发送一次ping
+
+          ws.on('message', (message) => {
+            try {
+              const data = JSON.parse(message.toString());
+              console.log('📨 收到BLE驱动消息:', data.type);
+
+              // 转发数据到渲染进程
+              if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('bluetooth-data', data);
+              }
+            } catch (error) {
+              console.error('❌ 解析BLE驱动消息失败:', error);
+            }
+          });
+
+          ws.on('close', () => {
+            console.log('🔌 浏览器BLE驱动连接已断开');
+            wsClients.delete(ws);
+            clearInterval(pingInterval);
+          });
+
+          ws.on('error', (error) => {
+            console.error('❌ WebSocket连接错误:', error);
+            wsClients.delete(ws);
+            clearInterval(pingInterval);
+          });
+
+          // 发送连接确认
+          ws.send(JSON.stringify({ type: 'connected', message: 'WebSocket连接成功' }));
+        });
+
+        // 广播消息到所有WebSocket客户端
+        function broadcastToWSClients(data) {
+          const message = JSON.stringify(data);
+          wsClients.forEach(client => {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(message);
+            }
+          });
+        }
+
+        // 将broadcastToWSClients函数暴露给全局，供BLE管理器使用
+        global.broadcastToWSClients = broadcastToWSClients;
+
+        resolve();
+      });
+    });
+
+    testServer.on('error', (err) => {
+      console.error(`❌ 检查端口${PORT}时出错:`, err.message);
+      reject(err);
+    });
+  });
+}
+
+/**
+ * 清理WebSocket服务器资源
+ */
+function cleanupWebSocketServer() {
+  if (wss) {
+    wss.close(() => {
+      console.log('📡 WebSocket服务器已关闭');
+      wss = null;
+    });
+  }
+
+  if (httpServer) {
+    httpServer.close(() => {
+      console.log('🌐 HTTP服务器已关闭');
+      httpServer = null;
+    });
+  }
+}
+
+/**
+ * 打开BLE驱动浏览器
+ */
+function openBLEDriverBrowser() {
+  const url = 'http://localhost:3000';
+  console.log(`🌐 打开BLE驱动浏览器: ${url}`);
+  shell.openExternal(url);
 }
 
 /**
@@ -75,22 +249,34 @@ function registerIPC() {
 
   // 命令发送（经典蓝牙模式下不支持命令发送）
   ipcMain.on('bt-send-command', (event, command) => {
-    console.warn('[BT] 经典蓝牙SPP模式不支持命令发送:', command);
+    console.warn('[BLE] BLE模式不支持命令发送:', command);
     event.reply?.('bt-command-sent', { success: false, error: 'command-not-supported' });
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   mainWindow = createWindow();
-  btManager = new BTManager({
-    mainWindow
-  });
 
-  registerIPC();
-  
-  // 自动开始扫描
-  console.log('🚀 启动BT管理器，开始扫描HC-05蓝牙串口...');
-  btManager.startScanning();
+  try {
+    // 创建WebSocket服务器（带端口检查）
+    await createWebSocketServer();
+  } catch (error) {
+    console.error('❌ 无法启动WebSocket服务器:', error.message);
+    // 即使WebSocket服务器启动失败，应用仍可继续运行
+  }
+
+  // 延迟启动BT管理器，给WebSocket服务器启动时间
+  setTimeout(() => {
+    btManager = new BLEManager({
+      mainWindow
+    });
+
+    registerIPC();
+
+    // 自动开始监听
+    console.log('🚀 启动BLE管理器，开始监听WebSocket数据...');
+    btManager.startScanning();
+  }, 100);
 });
 
 app.on('window-all-closed', () => {
@@ -102,4 +288,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   btManager?.dispose();
+
+  // 清理WebSocket服务器
+  cleanupWebSocketServer();
 });

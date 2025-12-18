@@ -67,18 +67,42 @@ class SEBTApp {
     this.minDirectionConsecutiveCount = 0; // 当前最短方向连续出现的次数
     this.lockFeatureEnabled = false; // 锁定功能开关（默认关闭）
 
+    // 从机参数设置相关变量
+    this.stableRequiredCount = 10; // 稳定时长连续次数（默认10次）
+    this.pressureMinThreshold = 500; // 压力最小阈值
+    this.pressureMaxThreshold = 3000; // 压力最大阈值
+    this.pressureSliderInitialized = false; // 双滑块是否已初始化
+
     this.initializeApp();
     this.setupEventListeners();
     this.setupGlobalClickListener();
     this.setupIPCListeners();
     this.updateMockDataButtonState(); // 初始化模拟按钮状态
-    this.updateBluetoothStatus({ connected: false, text: '📡 主机BT: 未连接', class: 'disconnected' });
-    this.updateSlaveBLEStatus({ connected: false, text: '🦶 从机BT: 未连接', class: 'disconnected' });
+    this.updateBluetoothStatus({ connected: false, class: 'disconnected' });
+    this.updateSlaveBLEStatus({ connected: false, class: 'disconnected' });
     
     // 初始化锁定时长显示（延迟执行，确保DOM已加载）
     setTimeout(() => {
       this.updateLockTimeDisplay();
+      this.initializeSlaveParameterSettings();
     }, 100);
+  }
+
+  /**
+   * 打开BLE驱动页面
+   */
+  openBLEDriverPage() {
+    const url = 'http://localhost:3000';
+    console.log(`🌐 打开BLE驱动页面: ${url}`);
+
+    // 使用Electron的shell模块打开外部浏览器
+    if (window.require) {
+      const { shell } = window.require('electron');
+      shell.openExternal(url);
+    } else {
+      // 备用方案：使用window.open
+      window.open(url, '_blank');
+    }
   }
 
   /**
@@ -443,6 +467,14 @@ class SEBTApp {
       slaveBtn.addEventListener('click', () => {
         this.bleTarget = 'slave';
         this.showBluetoothDeviceModal();
+      });
+    }
+
+    // BLE驱动连接按钮
+    const bleDriverBtn = document.getElementById('ble-driver-btn');
+    if (bleDriverBtn) {
+      bleDriverBtn.addEventListener('click', () => {
+        this.openBLEDriverPage();
       });
     }
 
@@ -1101,8 +1133,7 @@ class SEBTApp {
     bluetoothElement.classList.remove('connected', 'searching', 'disconnected');
 
     const connected = !!status.connected;
-    bluetoothElement.textContent = status.text ||
-      (connected ? `📡 主机BT: 已连接` : '📡 主机BT: 未连接');
+    bluetoothElement.textContent = connected ? '📡 主机状态: 已连接' : '📡 主机状态: 未连接';
 
     if (status.class) {
       const classes = status.class.split(' ');
@@ -1133,9 +1164,7 @@ class SEBTApp {
     slaveElement.classList.remove('connected', 'searching', 'disconnected');
 
     const connected = !!status.connected;
-    const name = status?.device?.name || '从机';
-    slaveElement.textContent = status.text ||
-      (connected ? `🦶 从机BT: 已连接 (${name})` : '🦶 从机BT: 未连接');
+    slaveElement.textContent = connected ? '🦶 从机状态: 已连接' : '🦶 从机状态: 未连接';
 
     if (status.class) {
       const classes = status.class.split(' ');
@@ -1507,7 +1536,7 @@ class SEBTApp {
         console.log('🔄 双击刷新BLE状态');
         if (!this.bleConnected) {
           this.updateBLEStatus({
-            text: '📱 主机BT: 未连接',
+            connected: false,
             class: 'disconnected'
           });
         }
@@ -1674,10 +1703,13 @@ class SEBTApp {
       const titleElement = document.getElementById('bluetooth-modal-title');
       if (titleElement) {
         const isHost = this.bleTarget !== 'slave';
-        const prefix = isHost ? '📡 主机BT' : '🦶 从机BT';
-        titleElement.textContent = this.bleConnected ?
-          `${prefix} - 已连接` : `${prefix} - 数据日志`;
+        const prefix = isHost ? '📡 主机' : '🦶 从机';
+        titleElement.textContent = `${prefix} - 参数调整`;
       }
+
+      // 根据目标切换显示内容
+      const isHost = this.bleTarget !== 'slave';
+      this.toggleModalContent(isHost);
 
       // 更新连接状态区域显示
       // 初始化模态框元素（只初始化一次）
@@ -1689,6 +1721,34 @@ class SEBTApp {
       this.bluetoothDeviceModal.classList.add('show');
     } else {
       console.error('❌ 蓝牙模态框元素不存在!');
+    }
+  }
+
+  /**
+   * 切换模态框内容显示（主机/从机模式）
+   * @param {boolean} isHost 是否为主机模式
+   */
+  toggleModalContent(isHost) {
+    const hostSettings = document.getElementById('host-lock-time-settings');
+    const slaveStableSettings = document.getElementById('slave-stable-time-settings');
+    const slavePressureSettings = document.getElementById('slave-pressure-threshold-settings');
+    const bluetoothScanSection = document.getElementById('bluetooth-scan-section');
+    const dataLogSection = document.querySelector('.bluetooth-data-log-section');
+
+    if (isHost) {
+      // 主机模式：显示锁定时长设置，隐藏从机设置
+      if (hostSettings) hostSettings.style.display = 'block';
+      if (slaveStableSettings) slaveStableSettings.style.display = 'none';
+      if (slavePressureSettings) slavePressureSettings.style.display = 'none';
+      if (bluetoothScanSection) bluetoothScanSection.style.display = 'none';
+      if (dataLogSection) dataLogSection.style.display = 'none';
+    } else {
+      // 从机模式：显示稳定时长和压力阈值设置，隐藏主机设置
+      if (hostSettings) hostSettings.style.display = 'none';
+      if (slaveStableSettings) slaveStableSettings.style.display = 'block';
+      if (slavePressureSettings) slavePressureSettings.style.display = 'block';
+      if (bluetoothScanSection) bluetoothScanSection.style.display = 'none';
+      if (dataLogSection) dataLogSection.style.display = 'none';
     }
   }
 
@@ -1723,6 +1783,202 @@ class SEBTApp {
     if (slider) {
       slider.value = this.LOCK_REQUIRED_COUNT;
     }
+  }
+
+  /**
+   * 更新稳定时长设置显示
+   */
+  updateStableTimeSettings() {
+    if (!this.stableTimeSlider) return;
+
+    const count = parseInt(this.stableTimeSlider.value);
+    this.stableRequiredCount = count;
+
+    const timeInSeconds = ((count * this.HARDWARE_SEND_INTERVAL_MS) / 1000).toFixed(1);
+
+    if (this.stableCountDisplay) {
+      this.stableCountDisplay.textContent = count;
+    }
+    if (this.stableTimeDisplay) {
+      this.stableTimeDisplay.textContent = timeInSeconds;
+    }
+
+  }
+
+  /**
+   * 更新压力阈值设置显示
+   */
+  updatePressureThresholdSettings() {
+    // 更新数值显示
+    this.updatePressureDisplay();
+
+    // 更新范围显示条
+    this.updatePressureRangeDisplay();
+  }
+
+  /**
+   * 更新压力阈值范围显示条
+   */
+  updatePressureRangeDisplay() {
+    const rangeElement = document.getElementById('pressure-range');
+    if (!rangeElement) return;
+
+    const minPercent = (this.pressureMinThreshold / 4056) * 100;
+    const maxPercent = (this.pressureMaxThreshold / 4056) * 100;
+
+    rangeElement.style.left = minPercent + '%';
+    rangeElement.style.width = (maxPercent - minPercent) + '%';
+  }
+
+  /**
+   * 更新压力阈值显示（用于数值显示）
+   */
+  updatePressureDisplay() {
+    const minDisplay = document.getElementById('pressure-min-display');
+    const maxDisplay = document.getElementById('pressure-max-display');
+
+    if (minDisplay) {
+      minDisplay.textContent = this.pressureMinThreshold;
+    }
+    if (maxDisplay) {
+      maxDisplay.textContent = this.pressureMaxThreshold;
+    }
+  }
+
+  /**
+   * 初始化压力阈值双滑块
+   */
+  initializePressureSlider() {
+    const container = document.getElementById('pressure-slider-container');
+    const minHandle = document.getElementById('pressure-min-handle');
+    const maxHandle = document.getElementById('pressure-max-handle');
+    const minTooltip = document.getElementById('pressure-min-tooltip');
+    const maxTooltip = document.getElementById('pressure-max-tooltip');
+    const track = container.querySelector('.pressure-threshold-track');
+
+    if (!container || !minHandle || !maxHandle) return;
+
+    let isDragging = false;
+    let activeHandle = null;
+    let startX = 0;
+    let startValue = 0;
+
+    const updateHandlePosition = (handle, value) => {
+      const percentage = (value / 4056) * 100;
+      handle.style.left = percentage + '%';
+      handle.setAttribute('data-value', value);
+
+      // 更新tooltip
+      const tooltip = handle.querySelector('.pressure-threshold-handle-tooltip');
+      if (tooltip) {
+        tooltip.textContent = value;
+      }
+    };
+
+    const getValueFromPosition = (clientX) => {
+      const rect = container.getBoundingClientRect();
+      const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
+      return Math.round((x / rect.width) * 4056);
+    };
+
+    // 初始化位置
+    updateHandlePosition(minHandle, this.pressureMinThreshold);
+    updateHandlePosition(maxHandle, this.pressureMaxThreshold);
+    this.updatePressureRangeDisplay();
+
+    // 鼠标按下事件
+    const handleMouseDown = (event, handle) => {
+      event.preventDefault();
+      isDragging = true;
+      activeHandle = handle;
+      startX = event.clientX;
+      startValue = parseInt(handle.getAttribute('data-value'));
+
+      // 提高z-index
+      handle.style.zIndex = '5';
+      handle.style.cursor = 'grabbing';
+
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+    };
+
+    // 鼠标移动事件
+    const handleMouseMove = (event) => {
+      if (!isDragging || !activeHandle) return;
+
+      const deltaX = event.clientX - startX;
+      const newValue = Math.max(0, Math.min(4056, startValue + Math.round((deltaX / container.getBoundingClientRect().width) * 4056)));
+
+      // 确保最小值不大于最大值
+      if (activeHandle === minHandle) {
+        const maxValue = parseInt(maxHandle.getAttribute('data-value'));
+        this.pressureMinThreshold = Math.min(newValue, maxValue);
+      } else {
+        const minValue = parseInt(minHandle.getAttribute('data-value'));
+        this.pressureMaxThreshold = Math.max(newValue, minValue);
+      }
+
+      updateHandlePosition(activeHandle, activeHandle === minHandle ? this.pressureMinThreshold : this.pressureMaxThreshold);
+      this.updatePressureThresholdSettings();
+    };
+
+    // 鼠标释放事件
+    const handleMouseUp = () => {
+      if (activeHandle) {
+        activeHandle.style.zIndex = '3';
+        activeHandle.style.cursor = 'grab';
+      }
+      isDragging = false;
+      activeHandle = null;
+
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    // 点击轨道事件
+    track.addEventListener('click', (event) => {
+      if (isDragging) return; // 如果正在拖拽，忽略点击
+
+      const clickValue = getValueFromPosition(event.clientX);
+      const minValue = parseInt(minHandle.getAttribute('data-value'));
+      const maxValue = parseInt(maxHandle.getAttribute('data-value'));
+
+      // 计算距离
+      const distanceToMin = Math.abs(clickValue - minValue);
+      const distanceToMax = Math.abs(clickValue - maxValue);
+
+      if (distanceToMin <= distanceToMax) {
+        // 设置最小值
+        const maxValue = parseInt(maxHandle.getAttribute('data-value'));
+        this.pressureMinThreshold = Math.min(clickValue, maxValue);
+        updateHandlePosition(minHandle, this.pressureMinThreshold);
+      } else {
+        // 设置最大值
+        const minValue = parseInt(minHandle.getAttribute('data-value'));
+        this.pressureMaxThreshold = Math.max(clickValue, minValue);
+        updateHandlePosition(maxHandle, this.pressureMaxThreshold);
+      }
+
+      this.updatePressureThresholdSettings();
+    });
+
+    // 绑定事件
+    minHandle.addEventListener('mousedown', (event) => handleMouseDown(event, minHandle));
+    maxHandle.addEventListener('mousedown', (event) => handleMouseDown(event, maxHandle));
+  }
+
+  /**
+   * 初始化从机参数设置显示
+   */
+  initializeSlaveParameterSettings() {
+    // 初始化稳定时长设置
+    if (this.stableTimeSlider) {
+      this.stableTimeSlider.value = this.stableRequiredCount;
+      this.updateStableTimeSettings();
+    }
+
+    // 初始化压力阈值设置（现在由自定义滑块处理）
+    this.updatePressureThresholdSettings();
   }
 
   /**
@@ -2228,7 +2484,16 @@ class SEBTApp {
     this.bleLogContainer = document.getElementById('ble-log-container');
     this.bleClearLogBtn = document.getElementById('ble-clear-log-btn');
     this.bleDataLogContainer = document.getElementById('bluetooth-data-log-container');
-    this.bleClearDataLogBtn = document.getElementById('ble-clear-data-log-btn');
+    this.bleClearDataLogBtn = document.getElementById('bluetooth-clear-data-log-btn');
+
+    // 从机参数设置元素
+    this.stableTimeSlider = document.getElementById('stable-time-slider');
+    this.stableCountDisplay = document.getElementById('stable-count-display');
+    this.stableTimeDisplay = document.getElementById('stable-time-display');
+    this.pressureMinSlider = document.getElementById('pressure-min-slider');
+    this.pressureMaxSlider = document.getElementById('pressure-max-slider');
+    this.pressureMinDisplay = document.getElementById('pressure-min-display');
+    this.pressureMaxDisplay = document.getElementById('pressure-max-display');
 
     // 设置BT IPC监听器（在元素初始化后立即设置，避免竞态条件）
     this.setupBLEIPCHandlers();
@@ -2253,11 +2518,32 @@ class SEBTApp {
       this.bleClearDataLogBtn.hasBoundEvents = true;
     }
 
+    // 从机参数设置事件绑定
+    if (this.stableTimeSlider && !this.stableTimeSlider.hasBoundEvents) {
+      this.stableTimeSlider.addEventListener('input', () => this.updateStableTimeSettings());
+      this.stableTimeSlider.hasBoundEvents = true;
+    }
+
+    // 自定义双滑块事件绑定
+    if (!this.pressureSliderInitialized) {
+      this.initializePressureSlider();
+      this.pressureSliderInitialized = true;
+    }
+
     // 标记为已初始化
     this.bleModalInitialized = true;
 
     // 更新连接状态显示
     this.updateBLEConnectionStatus();
+
+    // 初始化从机参数设置显示
+    this.updateStableTimeSettings();
+    this.updatePressureThresholdSettings();
+
+    // 初始化范围显示条样式
+    setTimeout(() => {
+      this.updatePressureRangeDisplay();
+    }, 100);
   }
 
   /**
@@ -2287,13 +2573,13 @@ class SEBTApp {
    */
 
   /**
-   * 断开BT连接
+   * 断开BLE连接
    */
   disconnectBLE() {
-    console.log('🔌 断开BT连接');
+    console.log('🔌 断开BLE连接');
     const { ipcRenderer } = require('electron');
     ipcRenderer.send('bt-disconnect');
-    this.addBLELog('正在断开BT连接...', 'info');
+    this.addBLELog('正在断开BLE连接...', 'info');
   }
 
   /**
