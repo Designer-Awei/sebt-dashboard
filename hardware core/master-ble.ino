@@ -104,8 +104,8 @@ class MyCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
         Serial.println("BLE: 特征值被读取");
     };
 
-    void onStatus(NimBLECharacteristic* pCharacteristic, Status status, int code) {
-        Serial.printf("BLE: 通知状态改变 - 状态: %d, 代码: %d\n", status, code);
+    void onStatus(NimBLECharacteristic* pCharacteristic, int code) {
+        Serial.printf("BLE: 通知状态改变 - 代码: %d\n", code);
     };
 };
 
@@ -287,9 +287,6 @@ void initBLE() {
   // 开始广播
   NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->setScanResponse(true);
-  pAdvertising->setMinPreferred(0x06);  // 设置连接参数
-  pAdvertising->setMaxPreferred(0x12);
 
   NimBLEDevice::startAdvertising();
 
@@ -503,5 +500,5 @@ void loop() {
   }
 
   // 让BLE库处理事件
-  NimBLEDevice::getServer()->handleConnections(true);
+  delay(10); // 简单的延时替代handleConnections
 }

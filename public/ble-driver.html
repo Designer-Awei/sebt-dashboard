@@ -109,6 +109,19 @@
             font-size: 1.2em;
         }
 
+        .logs-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .logs-header h3 {
+            margin: 0;
+            color: #495057;
+            font-size: 1.2em;
+        }
+
         .log-entry {
             padding: 8px 0;
             border-bottom: 1px solid #e9ecef;
@@ -189,17 +202,14 @@
                 📡 BLE: 未连接
             </div>
 
-            <div class="logs">
+            <div class="logs-header">
                 <h3>📝 连接日志</h3>
-                <div id="logContainer"></div>
                 <button class="clear-logs" onclick="clearLogs()">清空日志</button>
             </div>
-
-            <div class="logs" style="margin-top: 20px;">
-                <h3>📊 主机数据日志</h3>
-                <div id="hostDataLogContainer"></div>
-                <button class="clear-logs" onclick="clearHostDataLogs()">清空数据日志</button>
+            <div class="logs">
+                <div id="logContainer"></div>
             </div>
+
         </div>
     </div>
 
@@ -219,7 +229,9 @@
 const connectBtn = document.getElementById('connectBtn');
 const statusDiv = document.getElementById('status');
 const logContainer = document.getElementById('logContainer');
-const hostDataLogContainer = document.getElementById('hostDataLogContainer');
+
+// 防止重复显示WebSocket错误日志
+let websocketErrorLogged = false;
 
         /**
          * 添加连接日志（只在用户操作时显示）
@@ -261,28 +273,7 @@ function clearLogs() {
     addLog('日志已清空', 'info');
 }
 
-/**
- * 清空主机数据日志
- */
-function clearHostDataLogs() {
-    hostDataLogContainer.innerHTML = '';
-    addHostDataLog('数据日志已清空', 'info');
-}
 
-/**
- * 添加主机数据日志
- */
-function addHostDataLog(message, type = 'info') {
-    const timestamp = new Date().toLocaleTimeString();
-    const logEntry = document.createElement('div');
-    logEntry.className = `log-entry ${type}`;
-    logEntry.innerHTML = `<span class="timestamp">[${timestamp}]</span> ${message}`;
-    hostDataLogContainer.appendChild(logEntry);
-    hostDataLogContainer.scrollTop = hostDataLogContainer.scrollHeight;
-
-    // 同时输出到控制台
-    console.log(`[主机数据][${timestamp}] ${message}`);
-}
 
         /**
          * 连接 WebSocket
@@ -308,28 +299,24 @@ function addHostDataLog(message, type = 'info') {
                     if (data.type === 'connected') {
                         addDebugLog(`收到服务器消息: ${data.message}`, 'success');
                     } else if (data.type === 'host_sensor_data' || data.type === 'sensor_data') {
-                        // 显示主机传感器数据
-                        addHostDataLog(`传感器数据: 方向=${data.minDirection}, 距离=${data.minDistance}mm, 时间戳=${data.timestamp}`, 'info');
-
-                        // 显示详细的8方向距离数据
-                        if (data.distances && Array.isArray(data.distances)) {
-                            const directions = ['L', 'BL', 'FL', 'F', 'B', 'BR', 'FR', 'R'];
-                            const distanceDetails = data.distances.map((dist, idx) =>
-                                `${directions[idx]}:${dist}mm`
-                            ).join(', ');
-                            addHostDataLog(`详细距离: ${distanceDetails}`, 'info');
-                        }
+                        // 数据已通过BLE直接传递，不需要额外显示
+                        addDebugLog(`收到传感器数据: 方向=${data.minDirection}, 距离=${data.minDistance}mm`, 'info');
                     } else if (data.type === 'host_connected') {
-                        addHostDataLog('主机BLE设备已连接', 'success');
+                        addConnectionLog('主机BLE设备已连接', 'success');
                     } else if (data.type === 'host_disconnected') {
-                        addHostDataLog('主机BLE设备已断开', 'error');
+                        addConnectionLog('主机BLE设备已断开', 'error');
+                    } else if (data.type === 'close_ble_driver') {
+                        addDebugLog(`收到关闭指令: ${data.message}`, 'info');
+                        // Electron主窗口已关闭，自动关闭BLE驱动页面
+                        addConnectionLog('Electron主窗口已关闭，正在关闭BLE驱动页面...', 'info');
+                        setTimeout(() => {
+                            window.close();
+                        }, 2000); // 2秒后自动关闭，给用户时间看到消息
                     } else {
                         addDebugLog(`收到服务器消息: ${data.type}`, 'info');
-                        addHostDataLog(`收到消息: ${JSON.stringify(data)}`, 'info');
                     }
                 } catch (error) {
                     addDebugLog(`解析服务器消息失败: ${error.message}`, 'error');
-                    addHostDataLog(`解析消息失败: ${event.data}`, 'error');
                 }
             };
 
@@ -357,8 +344,14 @@ function addHostDataLog(message, type = 'info') {
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify(data));
                 addDebugLog(`发送数据到 Electron: ${data.type}`, 'info');
+                // 重置错误标志，说明连接已恢复
+                websocketErrorLogged = false;
             } else {
-                addConnectionLog('WebSocket 未连接，无法发送数据', 'error');
+                // 只在第一次遇到错误时显示日志
+                if (!websocketErrorLogged) {
+                    addConnectionLog('WebSocket 未连接，无法发送数据', 'error');
+                    websocketErrorLogged = true;
+                }
             }
         }
 

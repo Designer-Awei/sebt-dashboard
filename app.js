@@ -60,6 +60,7 @@ class SEBTApp {
     this.bleIPCHandlersSetup = false; // BLE IPC监听器是否已设置
     this.bleDiagnosing = false; // 是否正在进行BLE诊断
     this.simulatedMinDirection = -1; // 模拟数据的最近方向
+    this.bleDriverOpened = false; // BLE驱动页面是否已打开
 
     // 自动锁定相关变量
     this.currentMinDirection = -1; // 当前连续最短的方向
@@ -80,7 +81,13 @@ class SEBTApp {
     this.updateMockDataButtonState(); // 初始化模拟按钮状态
     this.updateBluetoothStatus({ connected: false, class: 'disconnected' });
     this.updateSlaveBLEStatus({ connected: false, class: 'disconnected' });
-    
+
+    // 重置BLE驱动页面状态
+    this.bleDriverOpened = false;
+
+    // 记录应用启动事件
+    this.addLog('🚀 SEBT平衡测试系统启动', 'success');
+
     // 初始化锁定时长显示（延迟执行，确保DOM已加载）
     setTimeout(() => {
       this.updateLockTimeDisplay();
@@ -92,6 +99,13 @@ class SEBTApp {
    * 打开BLE驱动页面
    */
   openBLEDriverPage() {
+    // 检查是否已经打开过BLE驱动页面
+    if (this.bleDriverOpened) {
+      console.log('ℹ️ BLE驱动页面已打开，跳过重复打开');
+      // 可以选择重新聚焦已打开的页面，但这里暂时不实现
+      return;
+    }
+
     const url = 'http://localhost:3000';
     console.log(`🌐 打开BLE驱动页面: ${url}`);
 
@@ -99,9 +113,11 @@ class SEBTApp {
     if (window.require) {
       const { shell } = window.require('electron');
       shell.openExternal(url);
+      this.bleDriverOpened = true;
     } else {
       // 备用方案：使用window.open
       window.open(url, '_blank');
+      this.bleDriverOpened = true;
     }
   }
 
@@ -219,6 +235,9 @@ class SEBTApp {
   performManualMeasurement(channel, direction) {
     console.log(`🎯 执行手动测距: ${direction.displayName} (通道: ${channel})`);
 
+    // 记录测距事件
+    this.addLog(`📏 开始测距: ${direction.displayName}`, 'info');
+
     // 设置标志，表示正在等待手动测距结果
     this.waitingForManualResult = { channel, direction };
 
@@ -302,6 +321,9 @@ class SEBTApp {
     }
 
     console.log(`🔒 方向已锁定，等待手动测距: ${directionMap[channel].displayName}`);
+
+    // 记录锁定事件
+    this.addLog(`🔒 锁定方向: ${directionMap[channel].displayName} - ${distance}mm`, 'info');
 
     // 更新按钮状态
     this.updateMockDataButtonState();
@@ -568,7 +590,13 @@ class SEBTApp {
     // 监听蓝牙数据
     ipcRenderer.on('bluetooth-data-received', (event, data) => {
       console.log('📊 蓝牙数据:', data);
-      this.handleBluetoothData(data);
+      if (data.type === 'scan_data') {
+        // WebSocket传递过来的数据，需要解析后处理
+        this.handleWebSocketData(data);
+      } else {
+        // 传统蓝牙数据
+        this.handleBluetoothData(data);
+      }
     });
 
     // 监听蓝牙设备发现（实时）
@@ -811,8 +839,6 @@ class SEBTApp {
       this.updateSensorDisplay(channel, sensorData);
     }
 
-    // 添加日志
-    this.addLog(sensorData);
   }
 
   /**
@@ -1015,38 +1041,44 @@ class SEBTApp {
       distanceElement.textContent = this.formatDistance(distance);
     }
 
-    // 更新样式 - 锁定事件使用原有逻辑
+    // 更新样式
     if (sensorData.active) {
       gridElement.classList.add('active');
       distanceElement.style.color = '#10b981'; // 绿色 (锁定状态)
+    } else if (sensorData.isMinDistance) {
+      gridElement.classList.add('min-distance');
+      distanceElement.style.color = '#f59e0b'; // 橙色 (最小距离方向)
     } else {
-      gridElement.classList.remove('active');
-      // 恢复到默认颜色，具体的方向高亮由highlightClosestDirection统一管理
+      gridElement.classList.remove('active', 'min-distance');
       distanceElement.style.color = '#3b82f6'; // 默认蓝色
     }
   }
 
   /**
-   * 添加日志条目
+   * 添加事件日志条目（只记录关键事件）
    */
-  addLog(sensorData) {
-    const sourceText = sensorData.source === 'hardware' ? '🔗 硬件' : '🎲 模拟';
-    const logEntry = {
-      id: Date.now(),
-      timestamp: sensorData.timestamp,
-      channel: sensorData.channel,
-      code: sensorData.code,
-      displayName: sensorData.displayName,
-      distance: sensorData.distance,
-      source: sensorData.source,
-      message: `${sourceText} 通道 ${sensorData.channel} (${sensorData.displayName}): ${sensorData.distance} mm`
-    };
+  addLog(messageOrData, type = 'info') {
+    let logEntry;
+
+    // 支持字符串参数（新方式）
+    if (typeof messageOrData === 'string') {
+      logEntry = {
+        id: Date.now(),
+        timestamp: Date.now(),
+        message: messageOrData,
+        type: type,
+        event: true // 标记为事件日志
+      };
+    } else {
+      // 支持sensorData对象参数（向后兼容，但不再记录传感器数据）
+      return; // 不再记录传感器详细数据
+    }
 
     this.logs.unshift(logEntry);
 
     // 限制日志数量
-    if (this.logs.length > 50) {
-      this.logs = this.logs.slice(0, 50);
+    if (this.logs.length > 20) {
+      this.logs = this.logs.slice(0, 20);
     }
 
     this.renderLogs();
@@ -1127,6 +1159,7 @@ class SEBTApp {
     const bluetoothElement = document.getElementById('bluetooth-status');
     if (!bluetoothElement || !status) return;
 
+    const wasConnected = this.bleConnected;
     this.bleConnected = !!status.connected;
     this.connectedDevice = status.device || this.connectedDevice;
 
@@ -1134,6 +1167,13 @@ class SEBTApp {
 
     const connected = !!status.connected;
     bluetoothElement.textContent = connected ? '📡 主机状态: 已连接' : '📡 主机状态: 未连接';
+
+    // 记录连接状态变化
+    if (connected && !wasConnected) {
+      this.addLog('🔗 主机BLE设备已连接', 'success');
+    } else if (!connected && wasConnected) {
+      this.addLog('🔌 主机BLE设备已断开', 'error');
+    }
 
     if (status.class) {
       const classes = status.class.split(' ');
@@ -1158,6 +1198,7 @@ class SEBTApp {
     const slaveElement = document.getElementById('slave-status');
     if (!slaveElement || !status) return;
 
+    const wasConnected = this.slaveDeviceConnected;
     this.slaveDeviceConnected = !!status.connected;
     this.slaveDevice = status.device || this.slaveDevice;
 
@@ -1165,6 +1206,13 @@ class SEBTApp {
 
     const connected = !!status.connected;
     slaveElement.textContent = connected ? '🦶 从机状态: 已连接' : '🦶 从机状态: 未连接';
+
+    // 记录连接状态变化
+    if (connected && !wasConnected) {
+      this.addLog('🔗 从机BLE设备已连接', 'success');
+    } else if (!connected && wasConnected) {
+      this.addLog('🔌 从机BLE设备已断开', 'error');
+    }
 
     if (status.class) {
       const classes = status.class.split(' ');
@@ -1178,7 +1226,57 @@ class SEBTApp {
   }
 
   /**
-   * 处理蓝牙数据
+   * 处理WebSocket传递的BLE数据
+   */
+  handleWebSocketData(data) {
+    try {
+      const jsonData = JSON.parse(data.data);
+
+      if (jsonData.type === 'sensor_data') {
+        // 处理8方向距离数据 - WebSocket格式
+        if (jsonData.distances && Array.isArray(jsonData.distances)) {
+          jsonData.distances.forEach((distance, direction) => {
+            // 将无效值（2000）转换为invalid标记
+            const processedDistance = (distance === this.MAX_VALID_DISTANCE || !this.isValidDistance(distance))
+              ? this.INVALID_DISTANCE
+              : distance;
+
+            const sensorData = {
+              channel: direction,
+              direction: direction,
+              distance: processedDistance,
+              timestamp: jsonData.timestamp,
+              source: 'bluetooth',
+              type: 'realtime',
+              active: false,
+              isMinDistance: direction === jsonData.minDirection
+            };
+
+            // 更新传感器数据
+            this.sensorData.set(direction, sensorData);
+
+            // 更新显示
+            this.updateSensorDisplay(direction, sensorData);
+
+            // 如果是最小距离方向，更新高亮
+            if (direction === jsonData.minDirection) {
+              this.updateMinDistanceHighlight(direction);
+            }
+          });
+        }
+
+        // 更新BLE连接状态
+        this.bleConnected = true;
+        this.updateBluetoothStatus({ connected: true });
+      }
+    } catch (error) {
+      console.error('❌ 处理WebSocket BLE数据失败:', error);
+      this.addLog(`❌ 处理BLE数据失败: ${error.message}`, 'error');
+    }
+  }
+
+  /**
+   * 处理传统蓝牙数据
    */
   handleBluetoothData(data) {
     // 解析蓝牙JSON数据
@@ -3129,7 +3227,7 @@ class SEBTApp {
     // 渲染日志条目
     this.logs.forEach(log => {
       const logElement = document.createElement('div');
-      logElement.className = `log-entry ${log.source === 'hardware' ? 'hardware' : 'simulated'}`;
+      logElement.className = `log-entry ${log.event ? 'event' : (log.source === 'hardware' ? 'hardware' : 'simulated')}`;
 
       const timeString = new Date(log.timestamp).toLocaleTimeString('zh-CN', {
         hour12: false,

@@ -34,6 +34,8 @@ function createWindow() {
 
   window.on('closed', () => {
     mainWindow = null;
+    // 通知浏览器关闭BLE驱动页面
+    notifyBrowserCloseBLEDriver();
     // 窗口关闭时清理WebSocket服务器
     cleanupWebSocketServer();
   });
@@ -136,7 +138,10 @@ function createWebSocketServer() {
 
               // 转发数据到渲染进程
               if (mainWindow && !mainWindow.isDestroyed()) {
-                mainWindow.webContents.send('bluetooth-data', data);
+                mainWindow.webContents.send('bluetooth-data-received', {
+                  type: 'scan_data',
+                  data: JSON.stringify(data)
+                });
               }
             } catch (error) {
               console.error('❌ 解析BLE驱动消息失败:', error);
@@ -292,3 +297,13 @@ app.on('before-quit', () => {
   // 清理WebSocket服务器
   cleanupWebSocketServer();
 });
+
+// 监听窗口关闭事件，通知浏览器关闭BLE驱动页面
+function notifyBrowserCloseBLEDriver() {
+  if (global.broadcastToWSClients) {
+    global.broadcastToWSClients({
+      type: 'close_ble_driver',
+      message: 'Electron主窗口已关闭，请关闭BLE驱动页面'
+    });
+  }
+}
