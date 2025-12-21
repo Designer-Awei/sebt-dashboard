@@ -136,12 +136,17 @@ function createWebSocketServer() {
               const data = JSON.parse(message.toString());
               console.log('📨 收到BLE驱动消息:', data.type);
 
-              // 转发数据到渲染进程
+              // 统一通过 ble-manager.js 处理传感器数据，确保格式统一为 [[dir, dist], ...]
+              if (btManager && data.type === 'sensor_data') {
+                btManager.handleWebSocketData(data);
+              } else {
+                // 非传感器数据直接转发（如连接状态等）
               if (mainWindow && !mainWindow.isDestroyed()) {
                 mainWindow.webContents.send('bluetooth-data-received', {
                   type: 'scan_data',
                   data: JSON.stringify(data)
                 });
+                }
               }
             } catch (error) {
               console.error('❌ 解析BLE驱动消息失败:', error);

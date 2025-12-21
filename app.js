@@ -61,12 +61,16 @@ class SEBTApp {
     this.bleDiagnosing = false; // 是否正在进行BLE诊断
     this.simulatedMinDirection = -1; // 模拟数据的最近方向
     this.bleDriverOpened = false; // BLE驱动页面是否已打开
+    this.lastClosestDirection = -1; // 上一次绿色实时高亮的方向
 
     // 自动锁定相关变量
     this.currentMinDirection = -1; // 当前连续最短的方向
     this.minDirectionStartTime = 0; // 当前最短方向开始的时间
     this.minDirectionConsecutiveCount = 0; // 当前最短方向连续出现的次数
     this.lockFeatureEnabled = false; // 锁定功能开关（默认关闭）
+    this.experimentRunning = false; // 实验运行状态（默认未运行）
+    this.experimentStartTime = 0; // 实验开始时间
+    this.experimentTimer = null; // 实验计时器
 
     // 从机参数设置相关变量
     this.stableRequiredCount = 10; // 稳定时长连续次数（默认10次）
@@ -182,51 +186,20 @@ class SEBTApp {
   /**
    * 处理方向卡片点击事件
    */
+  /**
+   * 点击方向卡片（已简化：现在锁定后直接显示测距按钮，不需要先选择卡片）
+   * 如果方向已锁定且按钮已显示，直接触发测距
+   */
   onDirectionCardClick(channel, direction) {
-    console.log(`📍 点击方向: ${direction.displayName} (通道: ${channel})`);
-
-    // 检查是否已完成测距
-    if (this.completedDirections.has(channel)) {
-      console.log('方向已完成测距，无需操作');
-      return;
-    }
-
-    // 检查是否已锁定（只有锁定的方向才能进行手动测距）
-    const canMeasure = this.lockedDirections.has(channel);
-
-    if (!canMeasure) {
-      console.log('方向未锁定，无法进行手动测距');
-      return;
-    }
-
-    // 隐藏所有手动测距按钮
-    document.querySelectorAll('.manual-measure-btn').forEach(btn => {
-      btn.style.display = 'none';
-    });
-
-    // 移除所有选中状态
-    document.querySelectorAll('.grid-item').forEach(item => {
-      item.classList.remove('selected');
-    });
-
-    // 显示当前卡片的测距按钮
-    const measureBtn = document.getElementById(`measure-${direction.code}`);
-    if (measureBtn) {
-      measureBtn.textContent = '开始测距';
-      measureBtn.style.display = 'block';
-
-      // 添加点击事件监听器
-      measureBtn.onclick = (e) => {
-        e.stopPropagation(); // 防止触发卡片点击事件
+    // 如果方向已锁定，直接触发测距（兼容旧逻辑）
+    if (this.lockedDirections.has(channel) && !this.completedDirections.has(channel)) {
+      const measureBtn = document.getElementById(`measure-${direction.code}`);
+      if (measureBtn && measureBtn.style.display !== 'none') {
+        // 如果按钮已显示，直接触发测距
         this.performManualMeasurement(channel, direction);
-      };
+      }
     }
-
-    // 添加视觉反馈
-    const gridItem = this.gridElements.get(channel);
-    if (gridItem) {
-      gridItem.classList.add('selected');
-    }
+    // 其他情况不做任何操作（锁定后按钮已自动显示，不需要选择卡片）
   }
 
   /**
@@ -235,8 +208,17 @@ class SEBTApp {
   performManualMeasurement(channel, direction) {
     console.log(`🎯 执行手动测距: ${direction.displayName} (通道: ${channel})`);
 
-    // 记录测距事件
-    this.addLog(`📏 开始测距: ${direction.displayName}`, 'info');
+    // 立即更新UI显示"计算中"状态（在开始收集数据之前）
+    const gridElement = this.gridElements.get(channel);
+    if (gridElement) {
+      const distanceElement = gridElement.querySelector('.distance-display');
+      if (distanceElement) {
+        distanceElement.textContent = '计算中...';
+        distanceElement.style.color = '#f59e0b'; // 橙色表示计算中
+      }
+    }
+
+    // 不记录开始测距日志，避免日志冗余
 
     // 设置标志，表示正在等待手动测距结果
     this.waitingForManualResult = { channel, direction };
@@ -248,15 +230,12 @@ class SEBTApp {
       measureBtn.disabled = true;
     }
 
-    // 添加日志
-    this.addLog(`📏 手动测距: ${direction.displayName}`, 'info');
-
     // 检查蓝牙连接状态
     if (this.bleConnected) {
       // 蓝牙连接模式：收集最近3次对应方向的距离数据并计算平均值
       console.log('📊 蓝牙测距模式 - 收集最近3次距离数据计算平均值');
 
-      // 开始收集距离数据
+      // 开始收集距离数据（此时UI已经显示"计算中"）
       this.startBluetoothMeasurementCollection(channel, direction);
 
     } else {
@@ -284,8 +263,8 @@ class SEBTApp {
     // 完成这个方向的测距
     this.completeDirection(channel, distance);
 
-    // 添加日志
-    this.addLog(`📐 手动测距完成: ${direction.displayName} - ${distance}mm`, 'success');
+    // 添加日志（统一为"测距完成"，不区分手动/自动）
+    this.addLog(`📐 测距完成: ${direction.displayName} - ${distance}mm`, 'success');
   }
 
   /**
@@ -296,20 +275,49 @@ class SEBTApp {
       return; // 已经锁定或完成
     }
 
+    // 保证同一时间只有一个锁定方向：清理已有锁定
+    if (this.lockedDirections.size > 0) {
+      this.lockedDirections.forEach((lockedCh) => {
+        const lockedEl = this.gridElements.get(lockedCh);
+        if (lockedEl) {
+          lockedEl.classList.remove('locked', 'min-distance', 'active');
+          const distEl = lockedEl.querySelector('.distance-display');
+          if (distEl) distEl.style.color = '#3b82f6';
+          const measureBtn = lockedEl.querySelector('.manual-measure-btn');
+          if (measureBtn) measureBtn.style.display = 'none';
+        }
+      });
+      this.lockedDirections.clear();
+    }
+
     // 添加到锁定集合
     this.lockedDirections.add(channel);
+    // 锁定后重置最近实时高亮记录，避免绿色残留
+    this.lastClosestDirection = -1;
 
-    // 更新UI显示锁定状态（橙色，表示等待测距）
+    // 立即清除所有绿色高亮（包括当前要锁定的方向），防止绿色高亮残留
+    this.gridElements.forEach((element) => {
+      element.classList.remove('min-distance');
+      const distanceElement = element.querySelector('.distance-display');
+      if (distanceElement && !element.classList.contains('locked') && !element.classList.contains('completed')) {
+        distanceElement.style.color = '#3b82f6';
+      }
+    });
+
+    // 立即更新UI显示锁定状态（蓝色高亮，表示等待测距）- 同步执行，确保即时显示
     const gridElement = this.gridElements.get(channel);
     if (gridElement) {
-      gridElement.classList.add('locked');
+      // 强制移除所有可能的高亮类，确保不会显示绿色
       gridElement.classList.remove('active', 'min-distance');
+      gridElement.classList.add('locked');
 
       // 更新距离显示
       const distanceElement = gridElement.querySelector('.distance-display');
       if (distanceElement) {
         distanceElement.textContent = `${distance} mm`;
-        distanceElement.style.color = '#f59e0b'; // 橙色表示锁定等待测距
+        // 强制设置为蓝色，确保不会被后续的highlightClosestDirection覆盖
+        distanceElement.style.color = '#3b82f6';
+        distanceElement.style.setProperty('color', '#3b82f6', 'important'); // 使用important确保优先级
       }
 
       // 显示手动测距按钮（因为这是锁定的方向）
@@ -317,13 +325,37 @@ class SEBTApp {
       if (measureBtn) {
         measureBtn.textContent = '开始测距';
         measureBtn.style.display = 'block';
+        measureBtn.style.visibility = 'visible';
+        measureBtn.disabled = false;
+        
+        // 直接绑定点击事件，确保点击一次即可测距
+        const direction = directionMap[channel];
+        measureBtn.onclick = (e) => {
+          e.stopPropagation(); // 防止触发卡片点击事件
+          e.preventDefault(); // 防止默认行为
+          this.performManualMeasurement(channel, direction);
+        };
+        
+        console.log(`✅ 测距按钮已显示: ${direction.displayName} (通道: ${channel})`);
+      } else {
+        console.warn(`⚠️ 未找到测距按钮元素: ${directionMap[channel].displayName} (通道: ${channel})`);
       }
     }
 
     console.log(`🔒 方向已锁定，等待手动测距: ${directionMap[channel].displayName}`);
 
-    // 记录锁定事件
-    this.addLog(`🔒 锁定方向: ${directionMap[channel].displayName} - ${distance}mm`, 'info');
+    // 记录锁定事件（只显示方向，不显示距离）
+    this.addLog(`🔒 锁定方向: ${directionMap[channel].displayName}`, 'info');
+
+    // 如果AutoRun开启，自动触发测距
+    if (this.lockFeatureEnabled && this.experimentRunning) {
+      const direction = directionMap[channel];
+      console.log(`🤖 AutoRun已开启，自动触发测距: ${direction.displayName}`);
+      // 延迟一小段时间后自动触发测距，给用户视觉反馈
+      setTimeout(() => {
+        this.performManualMeasurement(channel, direction);
+      }, 500);
+    }
 
     // 更新按钮状态
     this.updateMockDataButtonState();
@@ -354,7 +386,7 @@ class SEBTApp {
       gridElement.classList.remove('locked', 'active', 'min-distance', 'selected');
       gridElement.classList.add('completed');
 
-      // 更新距离显示
+      // 更新距离显示（固定读数，不再更新）
       const distanceElement = gridElement.querySelector('.distance-display');
       if (distanceElement) {
         distanceElement.textContent = `${distance} mm`;
@@ -366,6 +398,33 @@ class SEBTApp {
       if (measureBtn) {
         measureBtn.style.display = 'none';
       }
+
+      // 添加重置按钮（右上角刷新按钮）
+      let resetBtn = gridElement.querySelector('.reset-direction-btn');
+      if (!resetBtn) {
+        resetBtn = document.createElement('button');
+        resetBtn.className = 'reset-direction-btn';
+        resetBtn.title = '重测此方向';
+        // 使用SVG图标
+        const iconImg = document.createElement('img');
+        iconImg.src = 'public/refresh-ccw.svg';
+        iconImg.alt = '重测此方向';
+        iconImg.className = 'reset-icon';
+        resetBtn.appendChild(iconImg);
+        resetBtn.onclick = (e) => {
+          e.stopPropagation();
+          this.resetCompletedDirection(channel);
+        };
+        gridElement.appendChild(resetBtn);
+      }
+      resetBtn.style.display = 'flex';
+    }
+
+    // 更新传感器数据，标记为已完成（防止后续数据更新）
+    const sensorData = this.sensorData.get(channel);
+    if (sensorData) {
+      sensorData.distance = distance;
+      sensorData.completed = true;
     }
 
     console.log(`✅ 方向测距完成: ${directionMap[channel].displayName} = ${distance}mm`);
@@ -375,6 +434,87 @@ class SEBTApp {
 
     // 检查是否所有方向都已完成
     this.checkExperimentCompletion();
+
+    // 测距完成后，重新高亮最近方向（排除已完成的方向）
+    // 需要获取当前距离数组，排除已完成的方向
+    const distancesArray = new Array(8).fill(this.INVALID_DISTANCE);
+    this.sensorData.forEach((data, ch) => {
+      // 只包含未完成测距的方向的数据
+      if (data && data.distance !== undefined && !this.completedDirections.has(ch)) {
+        distancesArray[ch] = data.distance;
+      }
+    });
+    // 只有在没有锁定方向时才进行绿色高亮
+    if (this.lockedDirections.size === 0) {
+      this.highlightClosestDirection(distancesArray);
+    }
+  }
+
+  /**
+   * 重置已完成的方向（恢复为初始状态）
+   */
+  resetCompletedDirection(channel) {
+    if (!this.completedDirections.has(channel)) {
+      return; // 未完成，无需重置
+    }
+
+    const direction = directionMap[channel];
+    console.log(`🔄 重置已完成方向: ${direction.displayName}`);
+
+    // 从完成状态移除
+    this.completedDirections.delete(channel);
+
+    // 更新传感器数据，清除完成标记
+    const sensorData = this.sensorData.get(channel);
+    if (sensorData) {
+      sensorData.completed = false;
+      // 保留距离值，但允许后续更新
+    }
+
+    // 更新UI显示，恢复为普通状态
+    const gridElement = this.gridElements.get(channel);
+    if (gridElement) {
+      // 移除完成状态样式
+      gridElement.classList.remove('completed');
+
+      // 隐藏重置按钮
+      const resetBtn = gridElement.querySelector('.reset-direction-btn');
+      if (resetBtn) {
+        resetBtn.style.display = 'none';
+      }
+
+      // 恢复距离显示为实时更新状态
+      const distanceElement = gridElement.querySelector('.distance-display');
+      if (distanceElement) {
+        // 如果有保存的距离值，显示它；否则显示默认值
+        if (sensorData && sensorData.distance !== undefined) {
+          const displayText = (typeof sensorData.distance === 'number' && isFinite(sensorData.distance))
+            ? this.formatDistance(sensorData.distance)
+            : '--';
+          distanceElement.textContent = displayText;
+        } else {
+          distanceElement.textContent = '--- mm';
+        }
+        distanceElement.style.color = '#3b82f6'; // 恢复默认蓝色
+      }
+    }
+
+    // 更新按钮状态
+    this.updateMockDataButtonState();
+
+    // 重新高亮最近方向（现在这个方向可以参与高亮计算了）
+    const distancesArray = new Array(8).fill(Infinity);
+    this.sensorData.forEach((data, ch) => {
+      if (data && data.distance !== undefined && !this.completedDirections.has(ch)) {
+        distancesArray[ch] = data.distance;
+      }
+    });
+    if (this.lockedDirections.size === 0) {
+      this.highlightClosestDirection(distancesArray);
+    }
+
+    // 记录日志
+    this.addLog(`🔄 已重置方向: ${direction.displayName}，可重新测距`, 'info');
   }
 
   /**
@@ -548,8 +688,13 @@ class SEBTApp {
         this.lockFeatureEnabled = e.target.checked;
         console.log(`🔒 锁定功能: ${this.lockFeatureEnabled ? '已开启' : '已关闭'}`);
         
-        // 如果关闭锁定功能，清除所有锁定状态
+        // 如果关闭锁定功能，清除所有锁定状态并停止实验
         if (!this.lockFeatureEnabled) {
+          // 如果实验正在运行，先停止实验（会自动停止计时器）
+          if (this.experimentRunning) {
+            this.stopExperiment();
+          }
+          
           this.lockedDirections.clear();
           this.minDirectionConsecutiveCount = 0;
           this.currentMinDirection = -1;
@@ -563,6 +708,18 @@ class SEBTApp {
             }
           });
           this.updateMinDistanceHighlight();
+        }
+      });
+    }
+
+    // 开始实验按钮
+    const startExperimentBtn = document.getElementById('start-experiment-btn');
+    if (startExperimentBtn) {
+      startExperimentBtn.addEventListener('click', () => {
+        if (this.experimentRunning) {
+          this.stopExperiment();
+        } else {
+          this.startExperiment();
         }
       });
     }
@@ -599,15 +756,31 @@ class SEBTApp {
       }
     });
 
-    // 监听蓝牙数据
+    // 监听蓝牙数据（仅BLE，通过WebSocket Bridge）
     ipcRenderer.on('bluetooth-data-received', (event, data) => {
-      console.log('📊 蓝牙数据:', data);
       if (data.type === 'scan_data') {
-        // WebSocket传递过来的数据，需要解析后处理
-        this.handleWebSocketData(data);
-      } else {
-        // 传统蓝牙数据
-      this.handleBluetoothData(data);
+        // 解析WebSocket传递过来的数据
+        const payload = JSON.parse(data.data);
+        if (payload.source === 'host') {
+          // 主机传感器数据，直接处理（第一手数据）
+          // 收到主机数据时，更新连接状态（说明已连接）
+          if (!this.bleConnected) {
+            this.bleConnected = true;
+            this.connectedDevice = {
+              name: payload.name || 'SEBT-Host-001',
+              address: payload.address || 'unknown'
+            };
+            this.updateBluetoothStatus({
+              connected: true,
+              class: 'connected',
+              device: this.connectedDevice
+            });
+          }
+          this.handleHostBroadcast(payload);
+        } else if (payload.source === 'slave') {
+          // 从机压力数据
+          this.addBLEDataLog(`从机压力: ${payload.pressure} (raw=${payload.pressureRaw || 0})`, 'info');
+        }
       }
     });
 
@@ -728,13 +901,33 @@ class SEBTApp {
 
     // 获取当前距离数据
     const sensorData = this.sensorData.get(directionToLock);
-    const currentDistance = sensorData ? sensorData.distance : Math.floor(Math.random() * 100) + 50;
+    let currentDistance = sensorData ? sensorData.distance : Math.floor(Math.random() * 100) + 50;
+    
+    // 确保距离值是有效数字
+    if (typeof currentDistance !== 'number' || !isFinite(currentDistance) || currentDistance <= 0) {
+      currentDistance = Math.floor(Math.random() * 100) + 50;
+    }
 
     // 锁定这个方向
     this.lockDirection(directionToLock, currentDistance);
 
     console.log(`🔒 模拟锁定方向: ${directionMap[directionToLock].displayName} - ${currentDistance}mm`);
     this.addLog(`🔒 模拟锁定: ${directionMap[directionToLock].displayName} - ${currentDistance}mm`, 'success');
+    
+    // 确保按钮显示（延迟一下，确保DOM更新完成）
+    setTimeout(() => {
+      const gridElement = this.gridElements.get(directionToLock);
+      if (gridElement) {
+        const measureBtn = gridElement.querySelector('.manual-measure-btn');
+        if (measureBtn) {
+          measureBtn.style.display = 'block';
+          measureBtn.style.visibility = 'visible';
+          console.log(`✅ 模拟锁定后确认按钮显示: ${directionMap[directionToLock].displayName}`);
+        } else {
+          console.warn(`⚠️ 模拟锁定后未找到按钮: ${directionMap[directionToLock].displayName}`);
+        }
+      }
+    }, 100);
   }
 
   /**
@@ -1029,10 +1222,11 @@ class SEBTApp {
    * @returns {string} 格式化后的显示文本
    */
   formatDistance(distance) {
-    if (!this.isValidDistance(distance)) {
-      return this.INVALID_DISTANCE;
+    // 直接使用传入的真实数据，只检查是否为有效数字
+    if (typeof distance === 'number' && isFinite(distance)) {
+      return `${distance} mm`;
     }
-    return `${distance} mm`;
+    return '--';
   }
 
   /**
@@ -1045,25 +1239,46 @@ class SEBTApp {
     const distanceElement = gridElement.querySelector('.distance-display');
     if (!distanceElement) return;
 
-    // 更新距离显示（将2000视为无效值）
-    const distance = sensorData.distance;
-    if (distance === this.MAX_VALID_DISTANCE || !this.isValidDistance(distance)) {
-      distanceElement.textContent = this.INVALID_DISTANCE;
-    } else {
-      distanceElement.textContent = this.formatDistance(distance);
+    // 如果正在测距中，不更新显示（保持"计算中"状态）
+    if (this.bluetoothMeasurementCollection && this.bluetoothMeasurementCollection.channel === channel) {
+      return;
     }
 
-    // 更新样式
-    if (sensorData.active) {
-      gridElement.classList.add('active');
-      distanceElement.style.color = '#10b981'; // 绿色 (锁定状态)
-    } else if (sensorData.isMinDistance) {
-      gridElement.classList.add('min-distance');
-      distanceElement.style.color = '#f59e0b'; // 橙色 (最小距离方向)
-    } else {
-      gridElement.classList.remove('active', 'min-distance');
-      distanceElement.style.color = '#3b82f6'; // 默认蓝色
+    // 如果已完成测距，不更新显示（保持固定读数）
+    if (this.completedDirections.has(channel)) {
+      return;
     }
+
+    // 更新距离显示（直接使用传入的真实数据）
+    const distance = sensorData.distance;
+    const displayText = (typeof distance === 'number' && isFinite(distance))
+      ? this.formatDistance(distance)
+      : '--';
+
+    // 锁定方向：异步更新读数，避免阻塞其他方向的数据更新
+    if (gridElement.classList.contains('locked')) {
+      // 使用 requestAnimationFrame 异步更新，不阻塞数据流
+      requestAnimationFrame(() => {
+        distanceElement.textContent = displayText;
+        // 使用important确保蓝色高亮不会被覆盖
+        distanceElement.style.setProperty('color', '#3b82f6', 'important');
+        // 确保锁定方向的元素永远不会被添加min-distance类
+        gridElement.classList.remove('min-distance');
+      });
+      return;
+    }
+
+    // 非锁定方向：同步更新（保持实时性）
+    distanceElement.textContent = displayText;
+
+    // 如果已经有min-distance类（绿色实时高亮），保持绿色，不改变
+    if (gridElement.classList.contains('min-distance')) {
+      return;
+    }
+
+    // 普通状态：蓝色显示
+    gridElement.classList.remove('active');
+    distanceElement.style.color = '#3b82f6'; // 默认蓝色
   }
 
   /**
@@ -1086,11 +1301,12 @@ class SEBTApp {
       return; // 不再记录传感器详细数据
     }
 
-    this.logs.unshift(logEntry);
+    // 将新日志添加到数组末尾（新日志显示在底部）
+    this.logs.push(logEntry);
 
-    // 限制日志数量
+    // 限制日志数量（保留最后20条）
     if (this.logs.length > 20) {
-      this.logs = this.logs.slice(0, 20);
+      this.logs = this.logs.slice(-20);
     }
 
     this.renderLogs();
@@ -1178,7 +1394,8 @@ class SEBTApp {
     bluetoothElement.classList.remove('connected', 'searching', 'disconnected');
 
     const connected = !!status.connected;
-    bluetoothElement.textContent = connected ? '📡 主机状态: 已连接' : '📡 主机状态: 未连接';
+    // 只显示连接状态，不显示设备名称
+    bluetoothElement.textContent = connected ? '📱 主机BLE: 已连接' : '📱 主机BLE: 未连接';
 
     // 记录连接状态变化
     if (connected && !wasConnected) {
@@ -1242,46 +1459,15 @@ class SEBTApp {
   }
 
   /**
-   * 处理WebSocket传递的BLE数据
+   * 处理WebSocket传递的BLE数据（仅用于连接状态更新）
+   * 注意：传感器数据已统一在handleHostBroadcast中处理
    */
   handleWebSocketData(data) {
     try {
       const jsonData = JSON.parse(data.data);
 
       if (jsonData.type === 'sensor_data') {
-        // 处理8方向距离数据 - WebSocket格式
-        if (jsonData.distances && Array.isArray(jsonData.distances)) {
-          jsonData.distances.forEach((distance, direction) => {
-            // 将无效值（2000）转换为invalid标记
-            const processedDistance = (distance === this.MAX_VALID_DISTANCE || !this.isValidDistance(distance))
-              ? this.INVALID_DISTANCE
-              : distance;
-
-            const sensorData = {
-              channel: direction,
-              direction: direction,
-              distance: processedDistance,
-              timestamp: jsonData.timestamp,
-              source: 'bluetooth',
-              type: 'realtime',
-              active: false,
-              isMinDistance: direction === jsonData.minDirection
-            };
-
-            // 更新传感器数据
-            this.sensorData.set(direction, sensorData);
-
-            // 更新显示
-            this.updateSensorDisplay(direction, sensorData);
-
-            // 如果是最小距离方向，更新高亮
-            if (direction === jsonData.minDirection) {
-              this.updateMinDistanceHighlight(direction);
-            }
-          });
-        }
-
-        // 更新BLE连接状态
+        // 仅更新BLE连接状态，数据处理由handleHostBroadcast完成
         const wasConnected = this.bleConnected;
         this.bleConnected = true;
         this.updateBluetoothStatus({ connected: true });
@@ -1297,58 +1483,12 @@ class SEBTApp {
   }
 
   /**
-   * 处理传统蓝牙数据
-   */
-  handleBluetoothData(data) {
-    // 解析蓝牙JSON数据
-    try {
-      const jsonData = JSON.parse(data.data);
-
-      // 处理8方向距离数据
-      if (jsonData.distances && Array.isArray(jsonData.distances)) {
-        jsonData.distances.forEach(([direction, distance]) => {
-          // 将无效值（2000）转换为invalid标记
-          const processedDistance = (distance === this.MAX_VALID_DISTANCE || !this.isValidDistance(distance)) 
-            ? this.INVALID_DISTANCE 
-            : distance;
-          
-          const sensorData = {
-            channel: direction,
-            direction: direction,
-            distance: processedDistance,
-            timestamp: jsonData.timestamp,
-            source: 'bluetooth',
-            type: 'realtime',
-            active: false
-          };
-
-          // 更新传感器数据
-          this.sensorData.set(direction, sensorData);
-          
-          // 更新显示
-          this.updateSensorDisplay(direction, sensorData);
-
-          // 如果是最小距离方向，更新高亮
-          if (direction === jsonData.minDir && this.isValidDistance(processedDistance)) {
-            this.updateMinDistanceHighlight();
-          }
-        });
-        
-        // 更新最小距离高亮
-        this.updateMinDistanceHighlight();
-      }
-    } catch (error) {
-      console.error('解析蓝牙数据失败:', error);
-    }
-  }
-
-  /**
    * 开始蓝牙测距数据收集
    */
   startBluetoothMeasurementCollection(channel, direction) {
     console.log('📊 开始蓝牙测距数据收集:', direction.displayName, '方向', channel);
 
-    // 初始化收集状态
+    // 初始化收集状态（UI已在performManualMeasurement中设置为"计算中"）
     this.bluetoothMeasurementCollection = {
       channel: channel,
       direction: direction,
@@ -1369,53 +1509,36 @@ class SEBTApp {
   }
 
   /**
+   * 取消蓝牙测距数据收集
+   */
+  cancelBluetoothMeasurementCollection() {
+    if (this.bluetoothMeasurementCollection) {
+      if (this.bluetoothMeasurementCollection.timeoutId) {
+        clearTimeout(this.bluetoothMeasurementCollection.timeoutId);
+      }
+
+      // 恢复测距按钮状态
+      if (this.waitingForManualResult) {
+        const { direction } = this.waitingForManualResult;
+        const measureBtn = document.getElementById(`measure-${direction.code}`);
+        if (measureBtn) {
+          measureBtn.textContent = '开始测距';
+          measureBtn.disabled = false;
+        }
+      }
+
+      this.bluetoothMeasurementCollection = null;
+      this.waitingForManualResult = null;
+          }
+        }
+
+  /**
    * 发送蓝牙命令
    */
   sendBluetoothCommand(command) {
     console.log('[Bluetooth] 发送命令:', command);
     const { ipcRenderer } = require('electron');
     ipcRenderer.send('bluetooth-send-command', command);
-  }
-
-
-  /**
-   * 解析蓝牙扫描数据 (兼容旧格式)
-   */
-  parseBluetoothScanLegacyData(dataString) {
-    // 解析格式类似："[45,25.3],[90,28.7],[135,22.1],..."
-    const distances = [];
-    const directions = [0, 45, 90, 135, 180, 225, 270, 315];
-
-    try {
-      // 移除可能的方括号和引号
-      let cleanData = dataString.replace(/[\[\]"]/g, '');
-
-      // 按逗号分割每个方向的数据
-      const parts = cleanData.split('],[');
-
-      parts.forEach((part, index) => {
-        const values = part.split(',');
-        if (values.length >= 2) {
-          const direction = directions[index] || 0;
-          const distance = parseFloat(values[1]);
-
-          if (!isNaN(distance)) {
-            distances.push({
-              direction: direction,
-              distance: distance,
-              timestamp: new Date().toISOString(),
-              source: 'ble',
-              type: 'scan'
-            });
-          }
-        }
-      });
-
-    } catch (error) {
-      console.warn('BLE扫描数据解析警告:', error);
-    }
-
-    return distances;
   }
 
   /**
@@ -2565,10 +2688,7 @@ class SEBTApp {
       this.addBLELog('BT连接已断开', 'info');
     });
 
-    // 监听BT数据接收
-    ipcRenderer.on('bluetooth-data-received', (event, data) => {
-      this.handleBLEData(data);
-    });
+    // 数据接收已在setupIPCListeners中统一处理，此处不再重复监听
 
     // 监听BT错误
     ipcRenderer.on('bluetooth-error', (event, error) => {
@@ -2930,131 +3050,128 @@ class SEBTApp {
   // BT管理器自动连接，不需要设备发现和手动连接方法
 
   /**
-   * 处理BLE数据接收
-   */
-  handleBLEData(data) {
-    try {
-      if (data.type === 'scan_data') {
-        const payload = JSON.parse(data.data);
-        if (payload.source === 'host') {
-          this.handleHostBroadcast(payload);
-          return;
-        }
-        if (payload.source === 'slave') {
-          this.addBLEDataLog(`从机压力: ${payload.pressure} (raw=${payload.pressureRaw || 0})`, 'info');
-          return;
-        }
-        // 兼容旧格式
-        this.handleBLERealtimeData(payload);
-        return;
-      }
-      if (data.type === 'lock_data') {
-        const lockData = JSON.parse(data.data);
-        this.handleBLELockData(lockData);
-      }
-    } catch (error) {
-      console.error('❌ 处理BLE数据失败:', error, data);
-    }
-  }
-
-  /**
-   * 处理BLE实时扫描数据
-   */
-  handleBLERealtimeData(data) {
-    // 更新主页8方向数据显示
-    if (data.distances && Array.isArray(data.distances)) {
-      console.log(`📊 BLE数据: 收到${data.distances.length}个方向数据，最小方向${data.currentMinDirection}:${data.currentMinDistance}mm`);
-
-      data.distances.forEach(([direction, distance]) => {
-        // 创建传感器数据对象
-        const sensorData = {
-          distance: distance,
-          direction: direction,
-          timestamp: data.timestamp || Date.now(),
-          active: true,
-          source: 'ble',
-          isMinDistance: data.currentMinDirection === direction
-        };
-
-        this.sensorData.set(direction, sensorData);
-
-        // 更新UI显示
-        this.updateRealtimeSensorDisplay(direction, sensorData, sensorData.isMinDistance);
-      });
-
-      // 高亮最小距离方向
-      this.highlightClosestDirection();
-
-      // 更新BLE数据日志
-      this.addBLEDataLog(`方向${data.currentMinDirection}: ${data.currentMinDistance}mm`, 'info');
-    }
-
-    // 处理方向锁定状态
-    if (data.lockedDirection !== undefined && data.lockedDirection !== this.lockedDirection) {
-      this.lockedDirection = data.lockedDirection;
-      if (data.lockedDirection >= 0) {
-        this.addBLELog(`🎯 方向已锁定: ${data.lockedDirection}`, 'success');
-        this.addBLEDataLog(`方向锁定成功: ${data.lockedDirection} (${data.currentMinDistance}mm)`, 'success');
-      } else {
-        this.addBLELog('🔓 方向已解锁', 'info');
-        this.addBLEDataLog('方向解锁', 'info');
-      }
-    }
-  }
-
-  /**
-   * 处理主机广播的8方向数据
-   * @param {Object} payload
+   * 处理主机广播的8方向数据（统一处理硬件端数据格式）
+   * @param {Object} payload - 数据格式：{timestamp, minDirection, minDistance, distances: [[dir, dist], ...]}
+   * 注意：所有数据已由 ble-manager.js 统一转换为 [[dir, dist], ...] 格式，此处不再进行格式转换
    */
   handleHostBroadcast(payload) {
     const timestamp = payload.timestamp || Date.now();
     const distancesArray = new Array(8).fill(this.INVALID_DISTANCE);
+    const hasLockedDirection = this.lockedDirections.size > 0;
+    const hasCompletedDirections = this.completedDirections.size > 0;
 
+    // 统一数据格式：distances 必须是 [[dir, dist], [dir, dist], ...] 格式（由 ble-manager.js 保证）
+    // 优化：批量处理数据更新，减少DOM操作
     if (Array.isArray(payload.distances)) {
-      payload.distances.forEach(([dir, dist]) => {
+      const measuringChannel = this.bluetoothMeasurementCollection ? this.bluetoothMeasurementCollection.channel : -1;
+      
+      payload.distances.forEach((item) => {
+        // 验证数据格式
+        if (!Array.isArray(item) || item.length !== 2) {
+          console.warn('⚠️ 无效的距离数据项格式，期望 [dir, dist]，实际:', item);
+          return;
+        }
+
+        const [dir, dist] = item;
         if (typeof dir === 'number' && dir >= 0 && dir < 8 && typeof dist === 'number') {
-          // 将无效值（2000）转换为invalid标记
-          const processedDist = (dist === this.MAX_VALID_DISTANCE || !this.isValidDistance(dist)) 
-            ? this.INVALID_DISTANCE 
-            : dist;
-          distancesArray[dir] = processedDist;
-          this.updateSensorData(dir, processedDist, 'hardware');
-          const sensorData = this.sensorData.get(dir);
-          if (sensorData) {
-            sensorData.timestamp = timestamp;
-            this.updateSensorDisplay(dir, sensorData);
+          // 直接使用传入的真实数据，不进行有效性判断
+          distancesArray[dir] = dist;
+          this.updateSensorData(dir, dist, 'hardware');
+
+          // 如果正在对该方向测距，不刷新UI（保持"计算中"或最终读数）
+          if (measuringChannel !== dir && !this.completedDirections.has(dir)) {
+            const sensorData = this.sensorData.get(dir);
+            if (sensorData) {
+              sensorData.timestamp = timestamp;
+              this.updateSensorDisplay(dir, sensorData);
+            }
           }
         }
       });
     }
 
-    // 高亮最近方向
-    this.highlightClosestDirection(distancesArray);
+    // 构建过滤后的距离数组，排除已完成的方向（用于锁定逻辑）
+    // 优化：只在有已完成方向时才构建过滤数组
+    const filteredDistancesArray = hasCompletedDirections 
+      ? (() => {
+          const filtered = new Array(8).fill(Infinity); // 使用Infinity代替INVALID_DISTANCE
+          for (let ch = 0; ch < 8; ch++) {
+            if (!this.completedDirections.has(ch)) {
+              filtered[ch] = distancesArray[ch];
+            }
+          }
+          return filtered;
+        })()
+      : distancesArray;
 
-    // 计算最小方向
-    let minDir = payload.currentMinDirection;
-    let minDist = payload.currentMinDistance;
-    if (minDir === undefined || minDir === -1) {
-      let calcMin = Infinity;
-      let calcDir = -1;
-      distancesArray.forEach((d, idx) => {
-        if (this.isValidDistance(d) && d < calcMin) {
-          calcMin = d;
-          calcDir = idx;
-        }
-      });
-      minDir = calcDir;
-      minDist = calcMin;
+    // 高亮最近方向（排除已完成的方向）
+    // 如果存在锁定方向，highlightClosestDirection会清除所有绿色高亮并直接返回
+    this.highlightClosestDirection(filteredDistancesArray);
+
+    // 计算最小方向（优先使用currentMinDirection，兼容minDir字段）
+    // 初始化minDir和minDist，确保在块外也能访问
+    let minDir = payload.currentMinDirection !== undefined ? payload.currentMinDirection : payload.minDir;
+    let minDist = payload.currentMinDistance !== undefined ? payload.currentMinDistance : payload.minDist;
+    
+    // 优化：只在没有锁定方向时才计算最小方向（因为锁定后不需要自动锁定）
+    if (!hasLockedDirection) {
+      // 如果未提供最小方向，从过滤后的距离数组中计算
+      if (minDir === undefined || minDir === -1 || minDir === 255) {
+        let calcMin = Infinity;
+        let calcDir = -1;
+        filteredDistancesArray.forEach((d, idx) => {
+          // 直接使用传入的数据，只检查是否为有效数字
+          if (typeof d === 'number' && isFinite(d) && d >= 0 && d < calcMin) {
+            calcMin = d;
+            calcDir = idx;
+          }
+        });
+        minDir = calcDir;
+        minDist = calcMin;
+      }
+
+      // 检查并执行自动锁定（基于连续次数），异步防止阻塞数据更新
+      // 双重检查：确保方向有效且不在已完成列表中
+      if (minDir >= 0 && minDir < 8 && typeof minDist === 'number' && isFinite(minDist) && !this.completedDirections.has(minDir)) {
+        // 使用 requestAnimationFrame 异步执行，不阻塞数据更新流程
+        requestAnimationFrame(() => {
+          this.checkAutoLock(minDir, minDist);
+        });
+      }
     }
 
-    // 检查并执行自动锁定（基于连续次数）
-    if (minDir >= 0 && this.isValidDistance(minDist)) {
-      this.checkAutoLock(minDir, minDist);
+    // 处理测距数据收集（如果正在收集）
+    // 注意：正在测距的方向不会更新显示（在updateSensorDisplay中已处理）
+    if (this.bluetoothMeasurementCollection) {
+      const { channel, direction, distances, maxSamples } = this.bluetoothMeasurementCollection;
+      const collectedDistance = distancesArray[channel];
+      
+      // 直接使用传入的数据，不进行有效性判断
+      if (typeof collectedDistance === 'number' && isFinite(collectedDistance) && collectedDistance > 0) {
+        distances.push(collectedDistance);
+        console.log(`📊 测距样本 ${distances.length}/${maxSamples}: ${direction.displayName} = ${collectedDistance}mm`);
+        
+        // 检查是否收集够了样本
+        if (distances.length >= maxSamples) {
+          // 计算平均值
+          const averageDistance = Math.round(distances.reduce((sum, dist) => sum + dist, 0) / distances.length);
+          console.log(`📊 测距完成: ${direction.displayName} 平均值 ${averageDistance}mm (样本: [${distances.join(', ')}])`);
+          
+          // 完成测距（会固定显示读数）
+          this.handleManualMeasurementResult(channel, averageDistance, direction);
+          
+          // 清理收集状态
+          this.cancelBluetoothMeasurementCollection();
+        }
+      }
     }
 
     // 记录主机数据日志
+    // 确保minDir和minDist有值（如果未定义则显示-1和--）
+    const logMinDir = (minDir !== undefined && minDir >= 0) ? minDir : -1;
+    const logMinDist = (minDist !== undefined && typeof minDist === 'number' && isFinite(minDist)) ? `${minDist}mm` : '--';
     this.addBLEDataLog(
-      `主机广播: 方向${minDir} 距离 ${minDist}mm`,
+      `主机广播: 方向${logMinDir} 距离 ${logMinDist}`,
       'success'
     );
   }
@@ -3272,16 +3389,24 @@ class SEBTApp {
       logsContainer.appendChild(logElement);
     });
 
-    // 滚动到底部
-    logsContainer.scrollTop = logsContainer.scrollHeight;
+    // 自动滚动到底部（显示最新日志），使用平滑滚动
+    logsContainer.scrollTo({
+      top: logsContainer.scrollHeight,
+      behavior: 'smooth'
+    });
   }
 
   /**
    * 检查并执行自动锁定（基于连续次数）
    */
   checkAutoLock(currentMinDirection, currentMinDistance) {
-    // 如果锁定功能未开启，不执行锁定检查
-    if (!this.lockFeatureEnabled) {
+    // 如果实验未运行，不执行锁定检查
+    if (!this.experimentRunning) {
+      return;
+    }
+
+    // 如果已经有锁定方向，不执行新的锁定检查（保证同一时间只有一个锁定方向）
+    if (this.lockedDirections.size > 0) {
       return;
     }
 
@@ -3305,11 +3430,11 @@ class SEBTApp {
 
     // 检查是否达到锁定所需的连续次数
     if (this.minDirectionConsecutiveCount >= this.LOCK_REQUIRED_COUNT) {
-      // 自动锁定
+      // 自动锁定（lockDirection内部会确保同一时间只有一个锁定方向）
       this.lockDirection(currentMinDirection, currentMinDistance);
       const duration = Date.now() - this.minDirectionStartTime;
       console.log(`🔒 前端自动锁定: ${directionMap[currentMinDirection].displayName} - ${currentMinDistance}mm (连续${this.minDirectionConsecutiveCount}次，持续${duration}ms)`);
-      this.addLog(`🔒 前端自动锁定: ${directionMap[currentMinDirection].displayName} - ${currentMinDistance}mm`, 'success');
+      // 不记录日志，因为lockDirection已经记录了锁定方向日志
       this.minDirectionConsecutiveCount = 0; // 重置计数
     } else {
       const progress = (this.minDirectionConsecutiveCount / this.LOCK_REQUIRED_COUNT * 100).toFixed(0);
@@ -3327,38 +3452,256 @@ class SEBTApp {
   }
 
   /**
-   * 高亮最近方向（排除已完成测距的方向）
+   * 高亮最近方向（排除已完成测距和已锁定的方向）
    */
   highlightClosestDirection(distances) {
-    // 清除所有高亮
-    this.gridElements.forEach((element) => {
-      element.classList.remove('min-distance');
-    });
+    // 如果存在锁定方向：完全禁用绿色高亮，保持锁定为蓝色，不进行任何绿色高亮计算
+    if (this.lockedDirections.size > 0) {
+      // 立即清除所有绿色高亮（同步执行，确保即时清除）
+      this.gridElements.forEach((element) => {
+        // 强制移除绿色高亮类
+        element.classList.remove('min-distance');
+        const distanceElement = element.querySelector('.distance-display');
+        if (distanceElement) {
+          // 如果是锁定方向，强制设置为蓝色，使用important确保最高优先级，防止被任何后续逻辑覆盖
+          if (element.classList.contains('locked')) {
+            distanceElement.style.setProperty('color', '#3b82f6', 'important');
+            // 确保锁定方向的元素永远不会被添加min-distance类
+            element.classList.remove('min-distance');
+          } else if (!element.classList.contains('completed')) {
+            // 只更新未锁定且未完成的方向的颜色
+            distanceElement.style.color = '#3b82f6';
+          }
+        }
+      });
+      this.lastClosestDirection = -1;
+      return; // 存在锁定方向时，完全禁用绿色高亮计算，直接返回
+    }
 
-    // 从所有方向中找到未完成测距的方向中距离最短的一个
+    // 计算最近方向（排除已完成和已锁定的方向）
     let closestChannel = -1;
     let closestDistance = Infinity;
-
     for (let channel = 0; channel < 8; channel++) {
-      // 只考虑未锁定且未完成测距的方向（锁定方向不参与实时高亮）
+      // 排除已锁定和已完成的方向
       if (!this.lockedDirections.has(channel) && !this.completedDirections.has(channel)) {
         const distance = distances[channel];
-        if (this.isValidDistance(distance) && distance < closestDistance) {
+        // 直接使用传入的数据，只检查是否为有效数字
+        if (typeof distance === 'number' && isFinite(distance) && distance >= 0 && distance < closestDistance) {
           closestDistance = distance;
           closestChannel = channel;
         }
       }
     }
 
-    // 高亮找到的最短距离方向
-    if (closestChannel >= 0) {
-      const targetElement = this.gridElements.get(closestChannel);
-      if (targetElement) {
-        targetElement.classList.add('min-distance');
-        console.log(`🎯 高亮最近方向: ${directionMap[closestChannel].displayName} (${closestDistance}mm)`);
+    // 如果没有可高亮的方向，清除绿色并重置记录
+    if (closestChannel === -1) {
+      this.gridElements.forEach((element) => {
+        if (!element.classList.contains('locked') && !element.classList.contains('completed')) {
+          element.classList.remove('min-distance');
+          const distanceElement = element.querySelector('.distance-display');
+          if (distanceElement) {
+            distanceElement.style.color = '#3b82f6';
+          }
+        }
+      });
+      this.lastClosestDirection = -1;
+      return;
+    }
+
+    // 如果最近方向与上一次相同，则保持现状，避免闪烁
+    if (closestChannel === this.lastClosestDirection) {
+      return;
+    }
+
+    // 清除未锁定且未完成方向的绿色高亮
+    this.gridElements.forEach((element) => {
+      // 确保锁定方向完全不受影响
+      if (element.classList.contains('locked')) {
+        // 锁定方向保持蓝色，不进行任何操作
+        return;
       }
-    } else {
-      console.log('ℹ️ 没有可高亮的方向（所有方向都已完成测距）');
+      if (!element.classList.contains('completed')) {
+        element.classList.remove('min-distance');
+        const distanceElement = element.querySelector('.distance-display');
+        if (distanceElement) {
+          distanceElement.style.color = '#3b82f6';
+        }
+      }
+    });
+
+    // 高亮新的最近方向（绿色）
+    // 确保不会高亮锁定方向
+    if (closestChannel >= 0 && !this.lockedDirections.has(closestChannel)) {
+      const targetElement = this.gridElements.get(closestChannel);
+      if (targetElement && !targetElement.classList.contains('locked')) {
+        targetElement.classList.add('min-distance');
+        const distanceElement = targetElement.querySelector('.distance-display');
+        if (distanceElement) {
+          distanceElement.style.color = '#059669';
+        }
+      }
+    }
+
+    // 记录本次最近方向
+    this.lastClosestDirection = closestChannel;
+  }
+
+  /**
+   * 开始实验
+   */
+  startExperiment() {
+    if (this.experimentRunning) {
+      console.log('⚠️ 实验已在运行中');
+      return;
+    }
+
+    // 检查是否有BLE连接
+    if (!this.bleConnected) {
+      alert('请先连接BLE设备后再开始实验');
+      return;
+    }
+
+    // 开始实验
+    this.experimentRunning = true;
+    this.experimentStartTime = Date.now();
+    
+    // 重置自动锁定计数状态
+    this.currentMinDirection = -1;
+    this.minDirectionStartTime = 0;
+    this.minDirectionConsecutiveCount = 0;
+
+    // 更新按钮状态
+    const startExperimentBtn = document.getElementById('start-experiment-btn');
+    if (startExperimentBtn) {
+      startExperimentBtn.textContent = '停止实验';
+      startExperimentBtn.classList.add('secondary');
+      // 移除margin-top，因为父容器已经有margin-top: 8px，避免重复
+      startExperimentBtn.style.marginTop = '0';
+    }
+
+    // 显示实验状态组件
+    this.showExperimentStatus();
+
+    // 启动计时器
+    this.startExperimentTimer();
+
+    // 添加日志
+    this.addLog('🚀 实验已开始，开始监测传感器数据', 'success');
+    console.log('🚀 实验已开始，开始监测传感器数据');
+  }
+
+  /**
+   * 停止实验
+   */
+  stopExperiment() {
+    if (!this.experimentRunning) {
+      console.log('⚠️ 实验未在运行');
+      return;
+    }
+
+    // 停止实验
+    this.experimentRunning = false;
+
+    // 重置自动锁定计数状态
+    this.currentMinDirection = -1;
+    this.minDirectionStartTime = 0;
+    this.minDirectionConsecutiveCount = 0;
+
+    // 更新按钮状态
+    const startExperimentBtn = document.getElementById('start-experiment-btn');
+    if (startExperimentBtn) {
+      startExperimentBtn.textContent = '开始实验';
+      startExperimentBtn.classList.remove('secondary');
+      // 移除margin-top样式，恢复默认状态
+      startExperimentBtn.style.marginTop = '';
+    }
+
+    // 隐藏实验状态组件
+    this.hideExperimentStatus();
+
+    // 停止计时器
+    this.stopExperimentTimer();
+
+    // 清除绿色实时高亮
+    this.gridElements.forEach((element) => {
+      element.classList.remove('min-distance');
+    });
+
+    // 添加日志
+    this.addLog('⏹️ 实验已停止', 'info');
+    console.log('⏹️ 实验已停止');
+  }
+
+  /**
+   * 显示实验状态组件
+   */
+  showExperimentStatus() {
+    const statusElement = document.getElementById('experiment-status');
+    if (statusElement) {
+      statusElement.classList.add('show');
+      statusElement.classList.remove('paused');
+      const iconElement = statusElement.querySelector('.experiment-status-icon');
+      if (iconElement) {
+        iconElement.textContent = '▶';
+      }
+    }
+  }
+
+  /**
+   * 隐藏实验状态组件
+   */
+  hideExperimentStatus() {
+    const statusElement = document.getElementById('experiment-status');
+    if (statusElement) {
+      statusElement.classList.remove('show', 'paused');
+    }
+  }
+
+  /**
+   * 启动实验计时器
+   */
+  startExperimentTimer() {
+    // 清除之前的计时器
+    if (this.experimentTimer) {
+      clearInterval(this.experimentTimer);
+    }
+
+    // 立即更新一次时间显示
+    this.updateExperimentTime();
+
+    // 每秒更新一次时间显示
+    this.experimentTimer = setInterval(() => {
+      this.updateExperimentTime();
+    }, 1000);
+  }
+
+  /**
+   * 停止实验计时器
+   */
+  stopExperimentTimer() {
+    if (this.experimentTimer) {
+      clearInterval(this.experimentTimer);
+      this.experimentTimer = null;
+    }
+  }
+
+  /**
+   * 更新实验时长显示
+   */
+  updateExperimentTime() {
+    if (!this.experimentRunning || !this.experimentStartTime) {
+      return;
+    }
+
+    const elapsed = Math.floor((Date.now() - this.experimentStartTime) / 1000); // 秒
+    const minutes = Math.floor(elapsed / 60);
+    const seconds = elapsed % 60;
+
+    const timeString = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    
+    const timeElement = document.getElementById('experiment-time');
+    if (timeElement) {
+      timeElement.textContent = timeString;
     }
   }
 
@@ -3425,6 +3768,11 @@ class SEBTApp {
   resetLockedDirections() {
     console.log('🔄 重置所有锁定和完成状态');
 
+    // 如果实验正在运行，先停止实验
+    if (this.experimentRunning) {
+      this.stopExperiment();
+    }
+
     // 清除锁定和完成集合
     this.lockedDirections.clear();
     this.completedDirections.clear();
@@ -3438,6 +3786,12 @@ class SEBTApp {
     // 重置所有卡片的UI状态
     this.gridElements.forEach((element, channel) => {
       element.classList.remove('locked', 'selected', 'active', 'min-distance', 'completed');
+
+      // 隐藏重置按钮
+      const resetBtn = element.querySelector('.reset-direction-btn');
+      if (resetBtn) {
+        resetBtn.style.display = 'none';
+      }
 
       // 隐藏手动测距按钮
       const measureBtn = element.querySelector('.manual-measure-btn');

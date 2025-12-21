@@ -216,6 +216,16 @@ class BLEManager {
         this.packetCount++;
     console.log(`[BLE] 处理传感器数据 #${this.packetCount}: dir=${sensorData.minDirection}, dist=${sensorData.minDistance}mm`);
         
+        // 如果设备未连接，但收到了传感器数据，说明设备已连接，更新连接状态
+        if (!this.isConnected) {
+          console.log(`[BLE] 检测到设备已连接（通过传感器数据）`);
+          this.onBLEConnected({
+            name: 'SEBT-Host-001',
+            address: 'ble-driver',
+            id: 'ble-driver'
+          });
+        }
+        
         try {
           // 发送数据到前端（即使窗口不存在也不阻塞）
       this.sendSensorData(sensorData);

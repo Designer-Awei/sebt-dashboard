@@ -61,6 +61,85 @@
             z-index: 10; /* 确保在侧边栏之上 */
         }
 
+        /* 实验状态显示组件 */
+        .experiment-status {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            display: none; /* 默认隐藏 */
+            align-items: center;
+            gap: 12px;
+            padding: 12px 20px;
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+            z-index: 10;
+            animation: slideInLeft 0.3s ease-out;
+        }
+
+        .experiment-status.show {
+            display: flex;
+        }
+
+        @keyframes slideInLeft {
+            from {
+                opacity: 0;
+                transform: translateX(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        .experiment-status-icon {
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.6;
+            }
+        }
+
+        .experiment-status-content {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .experiment-status-label {
+            font-size: 0.75rem;
+            color: rgba(255, 255, 255, 0.8);
+            font-weight: 500;
+        }
+
+        .experiment-status-time {
+            font-size: 1.1rem;
+            color: #ffffff;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums; /* 等宽数字 */
+            letter-spacing: 1px;
+        }
+
+        .experiment-status.paused {
+            background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%);
+            box-shadow: 0 4px 12px rgba(107, 114, 128, 0.3);
+        }
+
+        .experiment-status.paused .experiment-status-icon {
+            animation: none;
+        }
+
         .ip-display,
         .server-status,
         .udp-status,
@@ -797,6 +876,45 @@
             font-weight: bold;
         }
 
+        /* 已完成方向的重置按钮 */
+        .reset-direction-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            width: 24px;
+            height: 24px;
+            border: none;
+            background: none;
+            padding: 0;
+            cursor: pointer;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            pointer-events: auto; /* 允许点击 */
+            transition: all 0.2s ease;
+            z-index: 10;
+        }
+
+        .grid-item.completed .reset-direction-btn {
+            display: flex;
+        }
+
+        .reset-direction-btn .reset-icon {
+            width: 20px;
+            height: 20px;
+            stroke: #6b7280;
+            transition: all 0.2s ease;
+        }
+
+        .reset-direction-btn:hover .reset-icon {
+            stroke: #3b82f6;
+            transform: rotate(-90deg);
+        }
+
+        .reset-direction-btn:active .reset-icon {
+            transform: rotate(-180deg);
+        }
+
         /* 网格容器 */
         .grid-container {
             flex: 1;
@@ -1018,7 +1136,7 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
-            cursor: pointer;
+            cursor: default; /* 默认光标，只有滑块部分可点击 */
             font-size: 14px;
             color: #1e293b;
             user-select: none;
@@ -1026,6 +1144,8 @@
 
         .lock-feature-toggle-label-text {
             font-weight: 500;
+            cursor: default; /* 文本部分不可点击 */
+            pointer-events: none; /* 禁用文本部分的点击事件 */
         }
 
         .lock-feature-toggle-switch {
@@ -1033,6 +1153,7 @@
             width: 50px;
             height: 26px;
             margin-left: 12px;
+            cursor: pointer; /* 只有滑块区域可以点击 */
         }
 
         .lock-feature-toggle-switch input {
@@ -1108,6 +1229,14 @@
     <div class="app-container">
         <!-- 主内容区域 -->
         <div class="main-content">
+            <!-- 实验状态显示组件 -->
+            <div class="experiment-status" id="experiment-status">
+                <div class="experiment-status-icon">▶</div>
+                <div class="experiment-status-content">
+                    <div class="experiment-status-label">实验进行中</div>
+                    <div class="experiment-status-time" id="experiment-time">00:00</div>
+                </div>
+            </div>
             <div class="header">
                 <h1>SEBT 平衡测试系统</h1>
                 <p>监测平衡测试数据</p>
@@ -1142,13 +1271,13 @@
             <div class="controls">
                 <!-- 锁定功能开关 -->
                 <div class="lock-feature-toggle-container">
-                    <label class="lock-feature-toggle-label">
-                        <span class="lock-feature-toggle-label-text">开启/关闭锁定</span>
-                        <span class="lock-feature-toggle-switch">
+                    <div class="lock-feature-toggle-label">
+                        <span class="lock-feature-toggle-label-text">AutoRun - 锁定&测距</span>
+                        <label class="lock-feature-toggle-switch">
                             <input type="checkbox" id="lock-feature-toggle">
                             <span class="lock-feature-toggle-slider"></span>
-                        </span>
                     </label>
+                    </div>
                 </div>
                 <div class="button-group">
                     <button class="control-button small" id="mock-data-btn">模拟数据</button>
