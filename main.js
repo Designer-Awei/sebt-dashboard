@@ -273,14 +273,14 @@ app.whenReady().then(async () => {
   // 延迟启动BT管理器，给WebSocket服务器启动时间
   setTimeout(() => {
     btManager = new BLEManager({
-      mainWindow
-    });
+    mainWindow
+  });
 
-    registerIPC();
-
+  registerIPC();
+  
     // 自动开始监听
     console.log('🚀 启动BLE管理器，开始监听WebSocket数据...');
-    btManager.startScanning();
+  btManager.startScanning();
   }, 100);
 });
 

@@ -1,7 +1,7 @@
 /*
  * SEBT BLE 管理器 (BLE Manager)
  * 通过 WebSocket Bridge 接收来自浏览器 Web Bluetooth API 的数据
- *
+ * 
  * 数据格式: [时间戳(4字节)] [最小方向(1字节)] [最小距离(2字节)] [8方向距离(16字节)]
  * 总长度: 23字节
  * 发送间隔: 300ms
@@ -169,12 +169,12 @@ class BLEManager {
 
     console.log(`✅ BLE 设备已连接: ${this.device.name}`);
 
-    this.sendToRenderer('bluetooth-connected', {
+            this.sendToRenderer('bluetooth-connected', {
       device: this.device
-    });
+            });
 
-    this.sendToRenderer('bluetooth-status', {
-      connected: true,
+            this.sendToRenderer('bluetooth-status', {
+              connected: true,
       device: this.device
     });
 
@@ -199,7 +199,7 @@ class BLEManager {
       connected: false,
       device: null
     });
-
+      
     // 广播断开状态到WebSocket客户端
     if (global.broadcastToWSClients) {
       global.broadcastToWSClients({
@@ -213,19 +213,19 @@ class BLEManager {
    * @param {Object} sensorData 传感器数据
    */
   processSensorData(sensorData) {
-    this.packetCount++;
+        this.packetCount++;
     console.log(`[BLE] 处理传感器数据 #${this.packetCount}: dir=${sensorData.minDirection}, dist=${sensorData.minDistance}mm`);
-
-    try {
-      // 发送数据到前端（即使窗口不存在也不阻塞）
+        
+        try {
+          // 发送数据到前端（即使窗口不存在也不阻塞）
       this.sendSensorData(sensorData);
 
       // 广播数据到WebSocket客户端（BLE驱动页面）
       this.broadcastHostData(sensorData);
-    } catch (error) {
+        } catch (error) {
       console.error(`[BLE] 发送数据到前端失败 #${this.packetCount}:`, error.message);
-    }
-  }
+          }
+        }
 
 
 
@@ -237,7 +237,7 @@ class BLEManager {
     try {
       // 转换为与BLE格式兼容的数据格式
       const distances = sensorData.distances.map((dist, index) => [index, dist]);
-
+      
       // 主数据格式（用于bluetooth-data-received）
       const payload = {
         source: 'host',
@@ -276,7 +276,7 @@ class BLEManager {
         0: 'L', 1: 'BL', 2: 'FL', 3: 'F',
         4: 'B', 5: 'BR', 6: 'FR', 7: 'R'
       };
-
+      
       sensorData.distances.forEach((dist, index) => {
         const direction = directionMap[index];
         if (direction) {

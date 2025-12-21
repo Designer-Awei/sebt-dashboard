@@ -964,10 +964,21 @@
             transition: all 0.2s ease;
         }
 
-        .control-button:hover {
+        .control-button:hover:not(:disabled) {
             background: #2563eb;
             transform: translateY(-1px);
             box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+        }
+
+        .control-button:disabled {
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+
+        .control-button:disabled:hover {
+            background: #3b82f6; /* 保持原有背景色 */
+            transform: none; /* 移除悬浮效果 */
+            box-shadow: none; /* 移除阴影效果 */
         }
 
         .control-button.secondary {
@@ -1140,12 +1151,16 @@
                     </label>
                 </div>
                 <div class="button-group">
-                    <button class="control-button small" id="mock-data-btn">模拟8方向数据</button>
+                    <button class="control-button small" id="mock-data-btn">模拟数据</button>
                     <button class="control-button small" id="mock-lock-btn">模拟锁定</button>
                 </div>
                 <div class="button-group">
-                    <button class="control-button secondary" id="reset-locked-btn">重置实验状态</button>
+                    <button class="control-button secondary" id="reset-locked-btn">重置状态</button>
                     <button class="control-button secondary" id="clear-logs-btn">清空日志</button>
+                </div>
+                <!-- 开始实验按钮 -->
+                <div class="button-group" style="margin-top: 8px;">
+                    <button class="control-button" id="start-experiment-btn">开始实验</button>
                 </div>
             </div>
         </div>

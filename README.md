@@ -5,7 +5,7 @@
 ## 📋 版本信息
 
 **当前版本**: v6.0 - ESP32-C3 + BLE + WebSocket Bridge架构
-**硬件平台**: ESP32-C3 (400KB RAM, 160MHz)
+**硬件平台**: ESP32-C3 (400KB RAM, 160MHz)  
 **通信方式**: BLE Notify + WebSocket Bridge
 **状态**: ✅ 生产就绪
 

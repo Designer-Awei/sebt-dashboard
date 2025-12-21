@@ -87,7 +87,7 @@ class SEBTApp {
 
     // 记录应用启动事件
     this.addLog('🚀 SEBT平衡测试系统启动', 'success');
-
+    
     // 初始化锁定时长显示（延迟执行，确保DOM已加载）
     setTimeout(() => {
       this.updateLockTimeDisplay();
@@ -465,13 +465,25 @@ class SEBTApp {
     // 模拟数据按钮
     const mockDataBtn = document.getElementById('mock-data-btn');
     if (mockDataBtn) {
-      mockDataBtn.addEventListener('click', () => this.simulateSensorData());
+      mockDataBtn.addEventListener('click', () => {
+        if (this.bleConnected) {
+          console.log('❌ BLE已连接，模拟数据功能已被禁用');
+          return;
+        }
+        this.simulateSensorData();
+      });
     }
 
     // 模拟锁定按钮
     const mockLockBtn = document.getElementById('mock-lock-btn');
     if (mockLockBtn) {
-      mockLockBtn.addEventListener('click', () => this.simulateLock());
+      mockLockBtn.addEventListener('click', () => {
+        if (this.bleConnected) {
+          console.log('❌ BLE已连接，模拟锁定功能已被禁用');
+          return;
+        }
+        this.simulateLock();
+      });
     }
 
     // 主机BLE按钮
@@ -595,7 +607,7 @@ class SEBTApp {
         this.handleWebSocketData(data);
       } else {
         // 传统蓝牙数据
-        this.handleBluetoothData(data);
+      this.handleBluetoothData(data);
       }
     });
 
@@ -1063,7 +1075,7 @@ class SEBTApp {
     // 支持字符串参数（新方式）
     if (typeof messageOrData === 'string') {
       logEntry = {
-        id: Date.now(),
+      id: Date.now(),
         timestamp: Date.now(),
         message: messageOrData,
         type: type,
@@ -1171,8 +1183,12 @@ class SEBTApp {
     // 记录连接状态变化
     if (connected && !wasConnected) {
       this.addLog('🔗 主机BLE设备已连接', 'success');
+      // BLE连接成功时，禁用模拟按钮
+      this.updateMockDataButtonState();
     } else if (!connected && wasConnected) {
       this.addLog('🔌 主机BLE设备已断开', 'error');
+      // BLE断开时，恢复模拟按钮状态
+      this.updateMockDataButtonState();
     }
 
     if (status.class) {
@@ -1266,8 +1282,13 @@ class SEBTApp {
         }
 
         // 更新BLE连接状态
+        const wasConnected = this.bleConnected;
         this.bleConnected = true;
         this.updateBluetoothStatus({ connected: true });
+        // 如果之前未连接，现在连接了，需要更新按钮状态
+        if (!wasConnected) {
+          this.updateMockDataButtonState();
+        }
       }
     } catch (error) {
       console.error('❌ 处理WebSocket BLE数据失败:', error);
@@ -2845,6 +2866,9 @@ class SEBTApp {
     this.bleConnected = true;
     this.bleConnectedDevice = device;
 
+    // BLE连接成功时立即禁用模拟按钮
+    this.updateMockDataButtonState();
+
     this.addBLELog(`已连接到 ${device.name}，等待广播数据...`, 'success');
 
     // 隐藏对话框，显示连接状态
@@ -2896,6 +2920,8 @@ class SEBTApp {
     }
 
     this.updateBLEConnectionStatus();
+    // 确保按钮状态与连接状态同步
+    this.updateMockDataButtonState();
   }
 
   /**
@@ -3169,6 +3195,8 @@ class SEBTApp {
       text: '📱 BLE: 未连接',
       class: 'disconnected'
     });
+    // 更新按钮状态，恢复模拟按钮可用
+    this.updateMockDataButtonState();
   }
 
   /**
@@ -3312,8 +3340,8 @@ class SEBTApp {
     let closestDistance = Infinity;
 
     for (let channel = 0; channel < 8; channel++) {
-      // 只考虑未完成测距的方向
-      if (!this.completedDirections.has(channel)) {
+      // 只考虑未锁定且未完成测距的方向（锁定方向不参与实时高亮）
+      if (!this.lockedDirections.has(channel) && !this.completedDirections.has(channel)) {
         const distance = distances[channel];
         if (this.isValidDistance(distance) && distance < closestDistance) {
           closestDistance = distance;
@@ -3341,17 +3369,19 @@ class SEBTApp {
     const mockDataBtn = document.getElementById('mock-data-btn');
     const mockLockBtn = document.getElementById('mock-lock-btn');
 
-    if (this.deviceConnected) {
-      // 设备已连接时，禁用所有模拟按钮
+    if (this.bleConnected) {
+      // 主机BLE已连接时，禁用所有模拟按钮（防止干扰实验过程和日志污染）
       if (mockDataBtn) {
         mockDataBtn.disabled = true;
-        mockDataBtn.textContent = '设备已连接';
-        mockDataBtn.style.opacity = '0.5';
+        mockDataBtn.textContent = '主机BLE已连接';
+        mockDataBtn.style.opacity = ''; // 移除内联样式，让CSS的:disabled样式生效
+        mockDataBtn.style.cursor = ''; // 移除内联样式，让CSS的:disabled样式生效
       }
       if (mockLockBtn) {
         mockLockBtn.disabled = true;
-        mockLockBtn.textContent = '设备已连接';
-        mockLockBtn.style.opacity = '0.5';
+        mockLockBtn.textContent = '主机BLE已连接';
+        mockLockBtn.style.opacity = ''; // 移除内联样式，让CSS的:disabled样式生效
+        mockLockBtn.style.cursor = ''; // 移除内联样式，让CSS的:disabled样式生效
       }
     } else {
       // 设备未连接时，根据锁定状态控制按钮
@@ -3362,11 +3392,13 @@ class SEBTApp {
         if (hasLockedDirections) {
           mockDataBtn.disabled = true;
           mockDataBtn.textContent = '请先完成测距';
-          mockDataBtn.style.opacity = '0.5';
+          mockDataBtn.style.opacity = ''; // 移除内联样式，让CSS的:disabled样式生效
+          mockDataBtn.style.cursor = ''; // 移除内联样式，让CSS的:disabled样式生效
         } else {
           mockDataBtn.disabled = false;
-          mockDataBtn.textContent = '模拟8方向数据';
-          mockDataBtn.style.opacity = '1';
+          mockDataBtn.textContent = '模拟数据';
+          mockDataBtn.style.opacity = ''; // 移除内联样式，恢复默认
+          mockDataBtn.style.cursor = ''; // 移除内联样式，恢复默认
         }
       }
 
@@ -3375,11 +3407,13 @@ class SEBTApp {
         if (hasLockedDirections) {
           mockLockBtn.disabled = true;
           mockLockBtn.textContent = '已有锁定方向';
-          mockLockBtn.style.opacity = '0.5';
+          mockLockBtn.style.opacity = ''; // 移除内联样式，让CSS的:disabled样式生效
+          mockLockBtn.style.cursor = ''; // 移除内联样式，让CSS的:disabled样式生效
         } else {
           mockLockBtn.disabled = false;
           mockLockBtn.textContent = '模拟锁定';
-          mockLockBtn.style.opacity = '1';
+          mockLockBtn.style.opacity = ''; // 移除内联样式，恢复默认
+          mockLockBtn.style.cursor = ''; // 移除内联样式，恢复默认
         }
       }
     }
