@@ -7,9 +7,10 @@
     "start": "electron .",
     "dev": "powershell -ExecutionPolicy Bypass -Command \"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; chcp 65001 | Out-Null; npm run dev:raw\"",
     "dev:raw": "electron .",
-    "test-bt": "node test-bt-receiver.js",
-    "check-spp": "powershell -ExecutionPolicy Bypass -File check-spp-service.ps1",
-    "test-bt-help": "echo '运行经典蓝牙测试: 1.烧录test-bt-esp32c3.ino 2.HC-05会自动配置 3.npm run test-bt'"
+    "build:icon": "node scripts/convert-icon.js",
+    "build": "npm run build:icon && set ELECTRON_REBUILD_SKIP=1 && electron-builder --win",
+    "build:win": "npm run build:icon && set ELECTRON_REBUILD_SKIP=1 && electron-builder --win",
+    "dist": "npm run build"
   },
   "keywords": [
     "electron",
@@ -18,13 +19,71 @@
   ],
   "author": "",
   "license": "ISC",
+  "build": {
+    "appId": "com.sebt.dashboard",
+    "productName": "SEBT 平衡测试系统",
+    "npmRebuild": false,
+    "nodeGypRebuild": false,
+    "buildDependenciesFromSource": false,
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "**/*",
+      "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
+      "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
+      "!**/node_modules/*.d.ts",
+      "!**/node_modules/.bin",
+      "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}",
+      "!.editorconfig",
+      "!**/._*",
+      "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}",
+      "!**/{__pycache__,thumbs.db,.flowconfig,.idea,.vs,.nyc_output}",
+      "!**/{appveyor.yml,.travis.yml,circle.yml}",
+      "!**/{npm-debug.log,yarn.lock,.yarn-integrity,.yarn-metadata.json}",
+      "!hardware core/**/*",
+      "!*.md",
+      "!dist/**/*",
+      "!build/temp-icons/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "SEBT 平衡测试系统",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "deleteAppDataOnUninstall": false
+    }
+  },
   "devDependencies": {
-    "electron": "^39.2.6"
+    "electron": "^39.2.6",
+    "electron-builder": "^26.0.12",
+    "sharp": "^0.34.5",
+    "to-ico": "^1.1.5"
   },
   "dependencies": {
-    "@stoprocent/noble": "^2.3.10",
-    "serialport": "^12.0.0",
-    "@serialport/parser-readline": "^12.0.0",
     "ws": "^8.16.0"
   }
 }

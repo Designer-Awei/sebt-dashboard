@@ -1,0 +1,5 @@
+# electron-builder 配置文件
+# 跳过原生模块重新编译，避免需要 Visual Studio
+
+electronRebuild: false
+
