@@ -249,7 +249,7 @@
             padding: 20px;
             max-width: 500px;
             width: 90%;
-            max-height: 70vh;
+            max-height: 90vh;
             overflow-y: auto;
             box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
         }
@@ -317,23 +317,47 @@
             transition: background-color 0.2s;
         }
 
-        .ble-device-btn.primary {
+        .ble-device-btn.primary,
+        .bluetooth-device-btn.primary {
             background: #7c3aed;
             color: white;
         }
 
-        .ble-device-btn.primary:hover {
+        .ble-device-btn.primary:hover,
+        .bluetooth-device-btn.primary:hover {
             background: #6d28d9;
         }
 
-        .ble-device-btn.secondary {
+        .ble-device-btn.secondary,
+        .bluetooth-device-btn.secondary {
             background: #f3f4f6;
             color: #374151;
             border: 1px solid #d1d5db;
         }
 
-        .ble-device-btn.secondary:hover {
+        .ble-device-btn.secondary:hover,
+        .bluetooth-device-btn.secondary:hover {
             background: #e5e7eb;
+        }
+
+        /* 实验记录模态窗按钮样式优化 - 更明显的颜色 */
+        .experiment-record-actions .bluetooth-device-btn.secondary {
+            background: #3b82f6; /* 蓝色 */
+            color: white;
+            border: none;
+        }
+
+        .experiment-record-actions .bluetooth-device-btn.secondary:hover {
+            background: #2563eb; /* 深蓝色 */
+        }
+
+        .experiment-record-actions .bluetooth-device-btn.primary {
+            background: #10b981; /* 绿色 */
+            color: white;
+        }
+
+        .experiment-record-actions .bluetooth-device-btn.primary:hover {
+            background: #059669; /* 深绿色 */
         }
 
         .ble-device-btn:disabled {
@@ -1108,6 +1132,16 @@
             background: #4b5563;
         }
 
+        /* 结束测试按钮使用红色背景 */
+        #start-experiment-btn.secondary {
+            background: #ef4444; /* 红色 */
+            color: white;
+        }
+
+        #start-experiment-btn.secondary:hover {
+            background: #dc2626; /* 深红色 */
+        }
+
         .button-group {
             display: flex;
             gap: 8px;
@@ -1223,6 +1257,142 @@
         .logs-container::-webkit-scrollbar-thumb:hover {
             background: #94a3b8;
         }
+
+        /* 实验记录模态窗样式 */
+        .experiment-record-section {
+            margin-bottom: 20px;
+        }
+
+        .experiment-record-section h4 {
+            margin: 0 0 15px 0;
+            color: #333;
+            font-size: 1rem;
+            border-bottom: 2px solid #7c3aed;
+            padding-bottom: 8px;
+        }
+
+        .experiment-record-form {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .form-row {
+            display: flex;
+            gap: 15px;
+        }
+
+        .form-group {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .form-group.readonly {
+            flex: 1;
+        }
+
+        .form-group label {
+            margin-bottom: 5px;
+            color: #555;
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        .form-input {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            transition: border-color 0.2s;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: #7c3aed;
+        }
+
+        .form-readonly-display {
+            padding: 8px 12px;
+            background: #f5f5f5;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            color: #666;
+        }
+
+        .experiment-record-table-container {
+            overflow-x: auto;
+        }
+
+        .experiment-record-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 15px;
+        }
+
+        .experiment-record-table th,
+        .experiment-record-table td {
+            padding: 10px;
+            text-align: center;
+            border: 1px solid #ddd;
+        }
+
+        .experiment-record-table th {
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .experiment-record-table td.direction-label {
+            background: #f8f9fa;
+            font-weight: 500;
+            color: #555;
+        }
+
+        .experiment-record-table td:not(.direction-label) {
+            font-weight: 500;
+            color: #333;
+        }
+
+        .test-score-display {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 12px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 6px;
+            margin-top: 10px;
+        }
+
+        .test-score-label {
+            color: white;
+            font-weight: 600;
+            font-size: 1rem;
+            margin-right: 10px;
+        }
+
+        .test-score-value {
+            color: white;
+            font-weight: bold;
+            font-size: 1.2rem;
+        }
+
+        .experiment-record-actions {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 100px;
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        .experiment-record-actions .bluetooth-device-btn {
+            padding: 10px 24px;
+            font-size: 0.95rem;
+            min-width: 120px;
+        }
     </style>
 </head>
 <body>
@@ -1287,10 +1457,114 @@
                     <button class="control-button secondary" id="reset-locked-btn">重置状态</button>
                     <button class="control-button secondary" id="clear-logs-btn">清空日志</button>
                 </div>
-                <!-- 开始实验按钮 -->
+                <!-- 开始测试按钮 -->
                 <div class="button-group" style="margin-top: 8px;">
-                    <button class="control-button" id="start-experiment-btn">开始实验</button>
+                    <button class="control-button" id="start-experiment-btn">开始测试</button>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 实验记录模态窗 -->
+    <div id="experiment-record-modal" class="bluetooth-device-modal">
+        <div class="bluetooth-device-dialog" style="max-width: 700px;">
+            <div class="bluetooth-modal-header">
+                <h3 id="experiment-record-modal-title">📋 SEBT 数据记录</h3>
+                <button id="experiment-record-modal-close" class="bluetooth-modal-close-btn" title="关闭">✕</button>
+            </div>
+
+            <!-- 基础信息输入板块 -->
+            <div class="experiment-record-section">
+                <h4>基础信息</h4>
+                <div class="experiment-record-form">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="test-subject-id">被测序号</label>
+                            <input type="text" id="test-subject-id" class="form-input" placeholder="请输入序号">
+                        </div>
+                        <div class="form-group">
+                            <label for="test-subject-gender">被测性别</label>
+                            <select id="test-subject-gender" class="form-input">
+                                <option value="">请选择</option>
+                                <option value="男">男</option>
+                                <option value="女">女</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="test-subject-age">被测年龄</label>
+                            <input type="number" id="test-subject-age" class="form-input" placeholder="请输入年龄" min="1" max="150">
+                        </div>
+                        <div class="form-group">
+                            <label for="test-subject-leg-length">被测腿长 (cm)</label>
+                            <input type="number" id="test-subject-leg-length" class="form-input" placeholder="请输入腿长" min="1" step="0.1">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group readonly">
+                            <label>主机参数</label>
+                            <div class="form-readonly-display">
+                                <span>锁定时长: </span>
+                                <span id="display-lock-time">10次</span>
+                            </div>
+                        </div>
+                        <div class="form-group readonly">
+                            <label>从机参数</label>
+                            <div class="form-readonly-display">
+                                <span>稳定时长: </span>
+                                <span id="display-stable-time">10次</span>
+                                <span style="margin-left: 15px;">压力阈值范围: </span>
+                                <span id="display-pressure-range">500-3000</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 表格板块 -->
+            <div class="experiment-record-section">
+                <h4>实验数据</h4>
+                <div class="experiment-record-table-container">
+                    <table class="experiment-record-table">
+                        <thead>
+                            <tr>
+                                <th>方向</th>
+                                <th>L</th>
+                                <th>BL</th>
+                                <th>FL</th>
+                                <th>F</th>
+                                <th>B</th>
+                                <th>BR</th>
+                                <th>FR</th>
+                                <th>R</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td class="direction-label">读数 (mm)</td>
+                                <td id="distance-L">0</td>
+                                <td id="distance-BL">0</td>
+                                <td id="distance-FL">0</td>
+                                <td id="distance-F">0</td>
+                                <td id="distance-B">0</td>
+                                <td id="distance-BR">0</td>
+                                <td id="distance-FR">0</td>
+                                <td id="distance-R">0</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <div class="test-score-display">
+                        <span class="test-score-label">测试分数:</span>
+                        <span id="test-score-value" class="test-score-value">--</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 底部按钮 -->
+            <div class="experiment-record-actions">
+                <button id="retest-btn" class="bluetooth-device-btn secondary">重新测试</button>
+                <button id="export-data-btn" class="bluetooth-device-btn primary">导出数据</button>
             </div>
         </div>
     </div>

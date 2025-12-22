@@ -61,6 +61,7 @@ class SEBTApp {
     this.bleDiagnosing = false; // 是否正在进行BLE诊断
     this.simulatedMinDirection = -1; // 模拟数据的最近方向
     this.bleDriverOpened = false; // BLE驱动页面是否已打开
+    this.slaveBleDriverOpened = false; // 从机BLE驱动页面是否已打开
     this.lastClosestDirection = -1; // 上一次绿色实时高亮的方向
 
     // 自动锁定相关变量
@@ -70,7 +71,13 @@ class SEBTApp {
     this.lockFeatureEnabled = false; // 锁定功能开关（默认关闭）
     this.experimentRunning = false; // 实验运行状态（默认未运行）
     this.experimentStartTime = 0; // 实验开始时间
-    this.experimentTimer = null; // 实验计时器
+    this.experimentTimer = null;
+    
+    // 实验记录相关变量
+    this.measurementResults = new Map(); // 存储8方向的测距结果 {channel: distance}
+    this.measurementTableUpdateTimer = null; // 测距数据表格更新定时器
+    this.lastTableUpdateValues = new Map(); // 上次表格更新的值，用于减少重复日志
+    this.tableUpdateLogCount = 0; // 表格更新日志计数，用于控制日志频率
 
     // 从机参数设置相关变量
     this.stableRequiredCount = 10; // 稳定时长连续次数（默认10次）
@@ -88,6 +95,7 @@ class SEBTApp {
 
     // 重置BLE驱动页面状态
     this.bleDriverOpened = false;
+    this.slaveBleDriverOpened = false;
 
     // 记录应用启动事件
     this.addLog('🚀 SEBT平衡测试系统启动', 'success');
@@ -100,7 +108,7 @@ class SEBTApp {
   }
 
   /**
-   * 打开BLE驱动页面
+   * 打开BLE驱动页面（主机）
    */
   openBLEDriverPage() {
     // 检查是否已经打开过BLE驱动页面
@@ -122,6 +130,31 @@ class SEBTApp {
       // 备用方案：使用window.open
       window.open(url, '_blank');
       this.bleDriverOpened = true;
+    }
+  }
+
+  /**
+   * 打开从机BLE驱动页面
+   */
+  openSlaveBLEDriverPage() {
+    // 检查是否已经打开过从机BLE驱动页面
+    if (this.slaveBleDriverOpened) {
+      console.log('ℹ️ 从机BLE驱动页面已打开，跳过重复打开');
+      return;
+    }
+
+    const url = 'http://localhost:3000/slave-ble-driver.html';
+    console.log(`🌐 打开从机BLE驱动页面: ${url}`);
+
+    // 使用Electron的shell模块打开外部浏览器
+    if (window.require) {
+      const { shell } = window.require('electron');
+      shell.openExternal(url);
+      this.slaveBleDriverOpened = true;
+    } else {
+      // 备用方案：使用window.open
+      window.open(url, '_blank');
+      this.slaveBleDriverOpened = true;
     }
   }
 
@@ -193,11 +226,11 @@ class SEBTApp {
   onDirectionCardClick(channel, direction) {
     // 如果方向已锁定，直接触发测距（兼容旧逻辑）
     if (this.lockedDirections.has(channel) && !this.completedDirections.has(channel)) {
-      const measureBtn = document.getElementById(`measure-${direction.code}`);
+    const measureBtn = document.getElementById(`measure-${direction.code}`);
       if (measureBtn && measureBtn.style.display !== 'none') {
         // 如果按钮已显示，直接触发测距
         this.performManualMeasurement(channel, direction);
-      }
+    }
     }
     // 其他情况不做任何操作（锁定后按钮已自动显示，不需要选择卡片）
   }
@@ -420,9 +453,31 @@ class SEBTApp {
       resetBtn.style.display = 'flex';
     }
 
+    // 存储测距结果到measurementResults（这是测距结果的可靠来源）
+    this.measurementResults.set(channel, distance);
+    
     // 更新传感器数据，标记为已完成（防止后续数据更新）
-    const sensorData = this.sensorData.get(channel);
-    if (sensorData) {
+    // 确保sensorData存在，如果不存在则创建它
+    let sensorData = this.sensorData.get(channel);
+    if (!sensorData) {
+      // 如果sensorData不存在，创建它
+      const direction = directionMap[channel];
+      if (direction) {
+        sensorData = {
+          channel,
+          code: direction.code,
+          name: direction.name,
+          displayName: direction.displayName,
+          distance: distance,
+          timestamp: Date.now(),
+          active: false,
+          completed: true,
+          source: 'measurement'
+        };
+        this.sensorData.set(channel, sensorData);
+      }
+    } else {
+      // 更新sensorData的distance和completed标记
       sensorData.distance = distance;
       sensorData.completed = true;
     }
@@ -519,17 +574,13 @@ class SEBTApp {
 
   /**
    * 检查实验是否完成
+   * 注意：不再显示通知弹窗，因为已有实验记录模态窗
    */
   checkExperimentCompletion() {
     if (this.completedDirections.size === 8) {
       console.log('🎉 实验完成！所有8个方向都已测距完毕');
       this.addLog('🎉 实验完成！所有方向测距完毕', 'success');
-
-      // 可以在这里添加完成后的处理逻辑
-      // 比如显示完成弹窗、保存结果等
-      setTimeout(() => {
-        alert('🎉 平衡测试实验完成！\n所有8个方向的测距都已完成。');
-      }, 500);
+      // 不再显示通知弹窗，用户可以通过"结束测试"按钮查看实验记录模态窗
     }
   }
 
@@ -690,7 +741,7 @@ class SEBTApp {
         
         // 如果关闭锁定功能，清除所有锁定状态并停止实验
         if (!this.lockFeatureEnabled) {
-          // 如果实验正在运行，先停止实验（会自动停止计时器）
+          // 如果测试正在运行，先停止测试（会自动停止计时器）
           if (this.experimentRunning) {
             this.stopExperiment();
           }
@@ -712,7 +763,7 @@ class SEBTApp {
       });
     }
 
-    // 开始实验按钮
+    // 开始测试按钮
     const startExperimentBtn = document.getElementById('start-experiment-btn');
     if (startExperimentBtn) {
       startExperimentBtn.addEventListener('click', () => {
@@ -720,6 +771,58 @@ class SEBTApp {
           this.stopExperiment();
         } else {
           this.startExperiment();
+        }
+      });
+    }
+
+    // 实验记录模态窗关闭按钮（恢复测试状态）
+    const experimentRecordModalClose = document.getElementById('experiment-record-modal-close');
+    if (experimentRecordModalClose) {
+      experimentRecordModalClose.addEventListener('click', () => {
+        // 关闭模态窗并恢复测试状态（用于误触恢复）
+        this.hideExperimentRecordModal(true);
+      });
+    }
+
+    // 实验记录模态窗背景点击关闭（不恢复测试，正常关闭）
+    const experimentRecordModal = document.getElementById('experiment-record-modal');
+    if (experimentRecordModal) {
+      experimentRecordModal.addEventListener('click', (e) => {
+        if (e.target === experimentRecordModal) {
+          this.hideExperimentRecordModal(false);
+        }
+      });
+    }
+
+    // 重新测试按钮
+    const retestBtn = document.getElementById('retest-btn');
+    if (retestBtn) {
+      retestBtn.addEventListener('click', () => {
+        this.retest();
+      });
+    }
+
+    // 导出数据按钮
+    const exportDataBtn = document.getElementById('export-data-btn');
+    if (exportDataBtn) {
+      exportDataBtn.addEventListener('click', () => {
+        this.exportToCSV();
+      });
+    }
+
+    // 腿长输入框实时计算测试分数
+    const legLengthInput = document.getElementById('test-subject-leg-length');
+    if (legLengthInput) {
+      legLengthInput.addEventListener('input', () => {
+        const legLength = parseFloat(legLengthInput.value);
+        const testScoreValue = document.getElementById('test-score-value');
+        if (testScoreValue) {
+          if (legLength && legLength > 0) {
+            const score = this.calculateTestScore(legLength);
+            testScoreValue.textContent = score.toFixed(2);
+          } else {
+            testScoreValue.textContent = '--';
+          }
         }
       });
     }
@@ -1224,7 +1327,7 @@ class SEBTApp {
   formatDistance(distance) {
     // 直接使用传入的真实数据，只检查是否为有效数字
     if (typeof distance === 'number' && isFinite(distance)) {
-      return `${distance} mm`;
+    return `${distance} mm`;
     }
     return '--';
   }
@@ -1278,7 +1381,7 @@ class SEBTApp {
 
     // 普通状态：蓝色显示
     gridElement.classList.remove('active');
-    distanceElement.style.color = '#3b82f6'; // 默认蓝色
+      distanceElement.style.color = '#3b82f6'; // 默认蓝色
   }
 
   /**
@@ -3080,10 +3183,10 @@ class SEBTApp {
 
           // 如果正在对该方向测距，不刷新UI（保持"计算中"或最终读数）
           if (measuringChannel !== dir && !this.completedDirections.has(dir)) {
-            const sensorData = this.sensorData.get(dir);
-            if (sensorData) {
-              sensorData.timestamp = timestamp;
-              this.updateSensorDisplay(dir, sensorData);
+          const sensorData = this.sensorData.get(dir);
+          if (sensorData) {
+            sensorData.timestamp = timestamp;
+            this.updateSensorDisplay(dir, sensorData);
             }
           }
         }
@@ -3117,25 +3220,25 @@ class SEBTApp {
     if (!hasLockedDirection) {
       // 如果未提供最小方向，从过滤后的距离数组中计算
       if (minDir === undefined || minDir === -1 || minDir === 255) {
-        let calcMin = Infinity;
-        let calcDir = -1;
+      let calcMin = Infinity;
+      let calcDir = -1;
         filteredDistancesArray.forEach((d, idx) => {
           // 直接使用传入的数据，只检查是否为有效数字
           if (typeof d === 'number' && isFinite(d) && d >= 0 && d < calcMin) {
-            calcMin = d;
-            calcDir = idx;
-          }
-        });
-        minDir = calcDir;
-        minDist = calcMin;
-      }
+          calcMin = d;
+          calcDir = idx;
+        }
+      });
+      minDir = calcDir;
+      minDist = calcMin;
+    }
 
       // 检查并执行自动锁定（基于连续次数），异步防止阻塞数据更新
       // 双重检查：确保方向有效且不在已完成列表中
       if (minDir >= 0 && minDir < 8 && typeof minDist === 'number' && isFinite(minDist) && !this.completedDirections.has(minDir)) {
         // 使用 requestAnimationFrame 异步执行，不阻塞数据更新流程
         requestAnimationFrame(() => {
-          this.checkAutoLock(minDir, minDist);
+      this.checkAutoLock(minDir, minDist);
         });
       }
     }
@@ -3458,9 +3561,9 @@ class SEBTApp {
     // 如果存在锁定方向：完全禁用绿色高亮，保持锁定为蓝色，不进行任何绿色高亮计算
     if (this.lockedDirections.size > 0) {
       // 立即清除所有绿色高亮（同步执行，确保即时清除）
-      this.gridElements.forEach((element) => {
+    this.gridElements.forEach((element) => {
         // 强制移除绿色高亮类
-        element.classList.remove('min-distance');
+      element.classList.remove('min-distance');
         const distanceElement = element.querySelector('.distance-display');
         if (distanceElement) {
           // 如果是锁定方向，强制设置为蓝色，使用important确保最高优先级，防止被任何后续逻辑覆盖
@@ -3547,21 +3650,21 @@ class SEBTApp {
   }
 
   /**
-   * 开始实验
+   * 开始测试
    */
   startExperiment() {
     if (this.experimentRunning) {
-      console.log('⚠️ 实验已在运行中');
+      console.log('⚠️ 测试已在运行中');
       return;
     }
 
     // 检查是否有BLE连接
     if (!this.bleConnected) {
-      alert('请先连接BLE设备后再开始实验');
+      alert('请先连接BLE设备后再开始测试');
       return;
     }
 
-    // 开始实验
+    // 开始测试
     this.experimentRunning = true;
     this.experimentStartTime = Date.now();
     
@@ -3569,11 +3672,14 @@ class SEBTApp {
     this.currentMinDirection = -1;
     this.minDirectionStartTime = 0;
     this.minDirectionConsecutiveCount = 0;
+    
+    // 清空之前的测距结果
+    this.measurementResults.clear();
 
     // 更新按钮状态
     const startExperimentBtn = document.getElementById('start-experiment-btn');
     if (startExperimentBtn) {
-      startExperimentBtn.textContent = '停止实验';
+      startExperimentBtn.textContent = '结束测试';
       startExperimentBtn.classList.add('secondary');
       // 移除margin-top，因为父容器已经有margin-top: 8px，避免重复
       startExperimentBtn.style.marginTop = '0';
@@ -3586,8 +3692,8 @@ class SEBTApp {
     this.startExperimentTimer();
 
     // 添加日志
-    this.addLog('🚀 实验已开始，开始监测传感器数据', 'success');
-    console.log('🚀 实验已开始，开始监测传感器数据');
+    this.addLog('🚀 测试已开始，开始监测传感器数据', 'success');
+    console.log('🚀 测试已开始，开始监测传感器数据');
   }
 
   /**
@@ -3595,11 +3701,11 @@ class SEBTApp {
    */
   stopExperiment() {
     if (!this.experimentRunning) {
-      console.log('⚠️ 实验未在运行');
+      console.log('⚠️ 测试未在运行');
       return;
     }
 
-    // 停止实验
+    // 停止测试
     this.experimentRunning = false;
 
     // 重置自动锁定计数状态
@@ -3610,7 +3716,7 @@ class SEBTApp {
     // 更新按钮状态
     const startExperimentBtn = document.getElementById('start-experiment-btn');
     if (startExperimentBtn) {
-      startExperimentBtn.textContent = '开始实验';
+      startExperimentBtn.textContent = '开始测试';
       startExperimentBtn.classList.remove('secondary');
       // 移除margin-top样式，恢复默认状态
       startExperimentBtn.style.marginTop = '';
@@ -3628,8 +3734,11 @@ class SEBTApp {
     });
 
     // 添加日志
-    this.addLog('⏹️ 实验已停止', 'info');
-    console.log('⏹️ 实验已停止');
+    this.addLog('⏹️ 测试已停止', 'info');
+    console.log('⏹️ 测试已停止');
+    
+    // 弹出实验记录模态窗
+    this.showExperimentRecordModal();
   }
 
   /**
@@ -3768,7 +3877,7 @@ class SEBTApp {
   resetLockedDirections() {
     console.log('🔄 重置所有锁定和完成状态');
 
-    // 如果实验正在运行，先停止实验
+    // 如果测试正在运行，先停止测试
     if (this.experimentRunning) {
       this.stopExperiment();
     }
@@ -3845,6 +3954,474 @@ class SEBTApp {
   getLogs() {
     return this.logs;
   }
+
+  /**
+   * 显示实验记录模态窗
+   */
+  showExperimentRecordModal() {
+    const modal = document.getElementById('experiment-record-modal');
+    if (!modal) return;
+
+    // 填充主机和从机参数（只读显示）
+    const lockTimeDisplay = document.getElementById('display-lock-time');
+    if (lockTimeDisplay) {
+      lockTimeDisplay.textContent = `${this.LOCK_REQUIRED_COUNT}次`;
+    }
+
+    const stableTimeDisplay = document.getElementById('display-stable-time');
+    if (stableTimeDisplay) {
+      stableTimeDisplay.textContent = `${this.stableRequiredCount}次`;
+    }
+
+    const pressureRangeDisplay = document.getElementById('display-pressure-range');
+    if (pressureRangeDisplay) {
+      pressureRangeDisplay.textContent = `${this.pressureMinThreshold}-${this.pressureMaxThreshold}`;
+    }
+
+    // 清空输入框
+    document.getElementById('test-subject-id').value = '';
+    document.getElementById('test-subject-gender').value = '';
+    document.getElementById('test-subject-age').value = '';
+    document.getElementById('test-subject-leg-length').value = '';
+    document.getElementById('test-score-value').textContent = '--';
+
+    // 显示模态窗
+    modal.classList.add('show');
+    
+    // 重置日志状态，确保首次更新时输出日志
+    this.tableUpdateLogCount = 0;
+    this.lastTableUpdateValues.clear();
+    
+    // 立即更新表格数据（在显示模态窗后）
+    // 先尝试立即更新，确保数据能立即显示
+    this.updateMeasurementTable();
+    
+    // 使用requestAnimationFrame再次更新，确保DOM完全渲染
+    // 这样可以避免被主页面的DOM操作阻塞
+    requestAnimationFrame(() => {
+      // 再次更新表格数据，确保数据正确显示
+      this.updateMeasurementTable();
+      
+      // 启动定时器，实时更新表格数据（每500ms更新一次）
+      // 这样在测试过程中打开模态窗时，也能持续更新数据
+      this.startMeasurementTableUpdateTimer();
+    });
+  }
+  
+  /**
+   * 启动测距数据表格更新定时器
+   * 使用requestAnimationFrame优化更新，避免被主页面DOM操作阻塞
+   */
+  startMeasurementTableUpdateTimer() {
+    // 清除之前的定时器（如果存在）
+    if (this.measurementTableUpdateTimer) {
+      clearInterval(this.measurementTableUpdateTimer);
+    }
+    
+    // 每500ms检查一次，但使用requestAnimationFrame来执行更新
+    // 这样可以避免被主页面的DOM操作阻塞
+    this.measurementTableUpdateTimer = setInterval(() => {
+      const modal = document.getElementById('experiment-record-modal');
+      if (modal && modal.classList.contains('show')) {
+        // 使用requestAnimationFrame异步更新，避免被主页面更新阻塞
+        requestAnimationFrame(() => {
+          this.updateMeasurementTable();
+        });
+      } else {
+        // 模态窗已关闭，停止定时器
+        this.stopMeasurementTableUpdateTimer();
+      }
+    }, 500);
+  }
+  
+  /**
+   * 停止测距数据表格更新定时器
+   */
+  stopMeasurementTableUpdateTimer() {
+    if (this.measurementTableUpdateTimer) {
+      clearInterval(this.measurementTableUpdateTimer);
+      this.measurementTableUpdateTimer = null;
+    }
+    // 重置日志计数，确保下次打开模态窗时日志正常
+    this.tableUpdateLogCount = 0;
+  }
+
+  /**
+   * 隐藏实验记录模态窗
+   * @param {boolean} restoreTest - 是否恢复测试状态（用于误触恢复）
+   */
+  hideExperimentRecordModal(restoreTest = false) {
+    const modal = document.getElementById('experiment-record-modal');
+    if (modal) {
+      modal.classList.remove('show');
+    }
+    
+    // 停止表格更新定时器
+    this.stopMeasurementTableUpdateTimer();
+    
+    // 如果用户点击关闭按钮恢复测试
+    if (restoreTest) {
+      this.restoreTestState();
+    }
+  }
+  
+  /**
+   * 恢复测试状态（用于误触结束测试后的恢复）
+   */
+  restoreTestState() {
+    // 恢复测试状态
+    this.experimentRunning = true;
+    
+    // 恢复按钮状态
+    const startExperimentBtn = document.getElementById('start-experiment-btn');
+    if (startExperimentBtn) {
+      startExperimentBtn.textContent = '结束测试';
+      startExperimentBtn.classList.add('secondary');
+      startExperimentBtn.style.marginTop = '0';
+    }
+    
+    // 显示实验状态组件
+    this.showExperimentStatus();
+    
+    // 恢复计时器（从停止的时间继续）
+    this.startExperimentTimer();
+    
+    // 添加日志
+    this.addLog('▶️ 测试已恢复（继续测试）', 'success');
+    console.log('▶️ 测试已恢复（继续测试）');
+  }
+
+  /**
+   * 更新测距数据表格
+   * 实时读取已完成测距方向的真实读数
+   * 直接使用measurementResults作为数据源（与calculateTestScore保持一致）
+   */
+  updateMeasurementTable() {
+    // 方向映射：L(0), BL(1), FL(2), F(3), B(4), BR(5), FR(6), R(7)
+    const directionIds = ['L', 'BL', 'FL', 'F', 'B', 'BR', 'FR', 'R'];
+    
+    // 确保模态窗已显示，并且获取模态窗容器
+    const modal = document.getElementById('experiment-record-modal');
+    if (!modal || !modal.classList.contains('show')) {
+      // 模态窗未显示，不更新
+      return;
+    }
+    
+    // 获取模态窗内的表格容器，确保只更新模态窗内的元素
+    const tableContainer = modal.querySelector('.experiment-record-table-container');
+    if (!tableContainer) {
+      console.warn('⚠️ 未找到模态窗表格容器');
+      return;
+    }
+    
+    // 批量收集需要更新的数据，减少DOM查询次数
+    const updates = [];
+    directionIds.forEach((dirCode, index) => {
+      const elementId = `distance-${dirCode}`;
+      // 在模态窗内查找元素，确保找到的是模态窗中的元素
+      const element = tableContainer.querySelector(`#${elementId}`) || document.getElementById(elementId);
+      if (!element) {
+        console.warn(`⚠️ 未找到表格元素: ${elementId}`);
+        return;
+      }
+      
+      // 验证元素是否在模态窗内
+      if (!modal.contains(element)) {
+        console.warn(`⚠️ 元素 ${elementId} 不在模态窗内，跳过更新`);
+        return;
+      }
+      
+      // 直接从measurementResults读取（与calculateTestScore保持一致）
+      // measurementResults是测距结果的可靠来源，在completeDirection中设置
+      const distance = this.measurementResults.get(index) || 0;
+      
+      // 收集更新操作
+      updates.push({ element, distance, index, dirCode });
+    });
+    
+    // 批量执行DOM更新，减少重排和重绘
+    let updateCount = 0;
+    const hasChanges = new Map(); // 记录哪些方向有变化
+    
+    updates.forEach(({ element, distance, index, dirCode }) => {
+      const currentValue = element.textContent.trim();
+      const newValue = String(distance);
+      const lastValue = this.lastTableUpdateValues.get(index);
+      
+      // 检查值是否有变化
+      const valueChanged = currentValue !== newValue;
+      const isNewValue = lastValue !== newValue;
+      
+      // 对于已完成的方向，强制更新（不管当前值是什么）
+      // 对于未完成的方向，只在值变化时更新
+      const shouldUpdate = valueChanged;
+      
+      if (shouldUpdate) {
+        // 强制更新DOM
+        const oldValue = element.textContent;
+        element.textContent = newValue;
+        updateCount++;
+        hasChanges.set(index, { oldValue: oldValue.trim(), newValue, dirCode });
+        
+        // 更新记录的值
+        this.lastTableUpdateValues.set(index, newValue);
+        
+        // 只在值变化或首次更新时输出详细日志
+        if (this.completedDirections.has(index) && isNewValue) {
+          // 立即验证更新是否成功（使用同步方式）
+          const verifyValue = element.textContent.trim();
+          const verifySuccess = verifyValue === newValue;
+          
+          if (!verifySuccess) {
+            console.error(`❌ [${dirCode}] DOM更新验证失败！期望: "${newValue}", 实际: "${verifyValue}"`);
+            // 尝试强制设置
+            element.textContent = newValue;
+            element.innerText = newValue;
+            console.log(`🔄 [${dirCode}] 尝试强制设置后: "${element.textContent.trim()}"`);
+          } else {
+            console.log(`✅ [${dirCode}] DOM已更新: "${oldValue.trim()}" → "${newValue}"`);
+          }
+        }
+      } else {
+        // 值没有变化，更新记录的值（用于下次比较）
+        if (lastValue !== newValue) {
+          this.lastTableUpdateValues.set(index, newValue);
+        }
+      }
+    });
+    
+    // 只在有变化或每10次更新时输出摘要日志（减少日志频率）
+    this.tableUpdateLogCount++;
+    const shouldLogSummary = updateCount > 0 || this.tableUpdateLogCount % 10 === 0;
+    
+    if (this.completedDirections.size > 0 && shouldLogSummary) {
+      const completedEntries = Array.from(this.completedDirections).map(idx => {
+        const dist = this.measurementResults.get(idx) || 0;
+        return `${directionIds[idx]}:${dist}`;
+      }).join(', ');
+      
+      if (updateCount > 0) {
+        // 有更新时输出详细信息
+        const changedEntries = Array.from(hasChanges.entries()).map(([idx, { dirCode, oldValue, newValue }]) => {
+          return `${directionIds[idx]}:${oldValue}→${newValue}`;
+        }).join(', ');
+        console.log(`📊 表格更新: [${changedEntries}], 已完成方向: [${completedEntries}]`);
+      } else if (this.tableUpdateLogCount % 10 === 0) {
+        // 每10次输出一次状态（无更新时）
+        console.log(`📊 表格状态检查 - 已完成方向: [${completedEntries}], 无更新`);
+      }
+    }
+  }
+
+  /**
+   * 计算测试分数
+   * @param {number} legLengthCm - 腿长（单位：cm）
+   * @returns {number} 测试分数
+   */
+  calculateTestScore(legLengthCm) {
+    if (!legLengthCm || legLengthCm <= 0) {
+      return 0;
+    }
+
+    // 计算8个方向距离总和（单位：mm）
+    let totalDistance = 0;
+    for (let i = 0; i < 8; i++) {
+      const distance = this.measurementResults.get(i) || 0;
+      totalDistance += distance;
+    }
+
+    // 单位换算：腿长从cm转换为mm
+    const legLengthMm = legLengthCm * 10;
+
+    // 测试分数 = (8个方向距离总和(mm) / (8 × 腿长(cm) × 10)) × 100
+    const testScore = (totalDistance / (8 * legLengthMm)) * 100;
+
+    // 返回保留2位小数的数字
+    return parseFloat(testScore.toFixed(2));
+  }
+
+  /**
+   * 导出CSV数据
+   */
+  async exportToCSV() {
+    // 获取基础信息
+    const subjectId = document.getElementById('test-subject-id').value.trim();
+    const subjectGender = document.getElementById('test-subject-gender').value;
+    const subjectAge = document.getElementById('test-subject-age').value;
+    const legLength = document.getElementById('test-subject-leg-length').value;
+
+    // 验证必填字段
+    if (!subjectId || !subjectGender || !subjectAge || !legLength) {
+      alert('请填写完整的基础信息（序号、性别、年龄、腿长）');
+      return;
+    }
+
+    // 计算测试分数
+    const testScore = this.calculateTestScore(parseFloat(legLength));
+
+    // 获取8方向读数（优先从sensorData读取已完成方向的真实读数）
+    const distances = [];
+    const directionIds = ['L', 'BL', 'FL', 'F', 'B', 'BR', 'FR', 'R'];
+    directionIds.forEach((dirCode, index) => {
+      let distance = 0;
+      
+      // 优先从sensorData读取已完成方向的真实读数
+      if (this.completedDirections.has(index)) {
+        const sensorData = this.sensorData.get(index);
+        if (sensorData && sensorData.distance !== undefined && 
+            typeof sensorData.distance === 'number' && 
+            sensorData.distance > 0) {
+          distance = sensorData.distance;
+        } else if (this.measurementResults.has(index)) {
+          distance = this.measurementResults.get(index);
+        }
+      } else if (this.measurementResults.has(index)) {
+        distance = this.measurementResults.get(index);
+      }
+      
+      distances.push(distance);
+    });
+
+    // 构建CSV数据
+    const csvHeader = [
+      '被测序号',
+      '被测性别',
+      '被测年龄',
+      '被测腿长(cm)',
+      '主机参数-锁定时长(次)',
+      '从机参数-稳定时长(次)',
+      '从机参数-压力最小阈值',
+      '从机参数-压力最大阈值',
+      '方向L(mm)',
+      '方向BL(mm)',
+      '方向FL(mm)',
+      '方向F(mm)',
+      '方向B(mm)',
+      '方向BR(mm)',
+      '方向FR(mm)',
+      '方向R(mm)',
+      '测试分数'
+    ];
+
+    const csvData = [
+      subjectId,
+      subjectGender,
+      subjectAge,
+      legLength,
+      this.LOCK_REQUIRED_COUNT,
+      this.stableRequiredCount,
+      this.pressureMinThreshold,
+      this.pressureMaxThreshold,
+      ...distances,
+      testScore.toFixed(2) // CSV导出时也保留2位小数
+    ];
+
+    // 构建CSV字符串
+    const csvContent = [
+      csvHeader.join(','),
+      csvData.join(',')
+    ].join('\n');
+
+    // 生成文件名：SEBT-序号-分数-时间（年月日）
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const dateStr = `${year}${month}${day}`;
+    const fileName = `SEBT-${subjectId}-${testScore}-${dateStr}.csv`;
+
+    // 使用Electron的dialog API保存文件
+    const { ipcRenderer } = require('electron');
+    try {
+      const result = await ipcRenderer.invoke('save-file-dialog', {
+        defaultPath: fileName,
+        filters: [
+          { name: 'CSV文件', extensions: ['csv'] }
+        ]
+      });
+
+      if (!result.canceled && result.filePath) {
+        // 通过IPC调用主进程写入文件
+        const writeResult = await ipcRenderer.invoke('write-file', {
+          filePath: result.filePath,
+          content: csvContent
+        });
+        if (writeResult && writeResult.success) {
+          alert('数据导出成功！');
+          console.log('✅ CSV文件已保存:', result.filePath);
+          
+          // 导出成功后，自动回到初始状态（类似点击重新测试按钮）
+          this.retest();
+        } else {
+          alert('导出失败：' + (writeResult?.error || '未知错误'));
+          console.error('❌ CSV文件保存失败:', writeResult?.error);
+        }
+      }
+    } catch (error) {
+      console.error('❌ 导出CSV失败:', error);
+      alert('导出失败，请检查文件路径和权限');
+    }
+  }
+
+  /**
+   * 重新测试
+   */
+  retest() {
+    // 关闭模态窗（不恢复测试状态）
+    this.hideExperimentRecordModal(false);
+
+    // 重置实验状态
+    this.experimentRunning = false;
+
+    // 清空已完成测距数据
+    this.completedDirections.clear();
+    this.measurementResults.clear();
+
+    // 清空锁定方向
+    this.lockedDirections.clear();
+
+    // 重置自动锁定计数状态
+    this.currentMinDirection = -1;
+    this.minDirectionStartTime = 0;
+    this.minDirectionConsecutiveCount = 0;
+
+    // 更新按钮文本
+    const startExperimentBtn = document.getElementById('start-experiment-btn');
+    if (startExperimentBtn) {
+      startExperimentBtn.textContent = '开始测试';
+      startExperimentBtn.classList.remove('secondary');
+      startExperimentBtn.style.marginTop = '';
+    }
+
+    // 隐藏实验状态显示组件
+    this.hideExperimentStatus();
+
+    // 停止计时器
+    this.stopExperimentTimer();
+
+    // 清除所有高亮
+    this.gridElements.forEach((element) => {
+      element.classList.remove('min-distance', 'locked', 'active', 'completed', 'selected');
+    });
+
+    // 重置传感器显示
+    this.sensorData.forEach((data, channel) => {
+      if (data) {
+        data.completed = false;
+        const gridElement = this.gridElements.get(channel);
+        if (gridElement) {
+          const distanceElement = gridElement.querySelector('.distance-display');
+          if (distanceElement) {
+            distanceElement.textContent = '--- mm';
+          }
+        }
+      }
+    });
+
+    // 添加日志
+    this.addLog('🔄 已重置，可以开始新的测试', 'info');
+    console.log('🔄 已重置，可以开始新的测试');
+  }
 }
 
 // 应用初始化
@@ -3857,3 +4434,4 @@ document.addEventListener('DOMContentLoaded', () => {
   console.log('SEBT 平衡测试系统已启动');
   console.log('方位映射:', directionMap);
 });
+

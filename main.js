@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const http = require('http');
 const WebSocket = require('ws');
 const path = require('path');
@@ -261,6 +261,28 @@ function registerIPC() {
   ipcMain.on('bt-send-command', (event, command) => {
     console.warn('[BLE] BLE模式不支持命令发送:', command);
     event.reply?.('bt-command-sent', { success: false, error: 'command-not-supported' });
+  });
+
+  // 文件保存对话框
+  ipcMain.handle('save-file-dialog', async (event, options) => {
+    try {
+      const result = await dialog.showSaveDialog(mainWindow, options);
+      return result;
+    } catch (error) {
+      console.error('❌ 文件保存对话框错误:', error);
+      return { canceled: true };
+    }
+  });
+
+  // 写入文件
+  ipcMain.handle('write-file', async (event, { filePath, content }) => {
+    try {
+      fs.writeFileSync(filePath, content, 'utf8');
+      return { success: true };
+    } catch (error) {
+      console.error('❌ 写入文件失败:', error);
+      return { success: false, error: error.message };
+    }
   });
 }
 

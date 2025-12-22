@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SEBT 从机 BLE 驱动</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 2.5em;
+            font-weight: 300;
+        }
+
+        .header p {
+            margin: 10px 0 0 0;
+            opacity: 0.9;
+            font-size: 1.1em;
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .connect-button {
+            display: block;
+            width: 100%;
+            padding: 20px;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-bottom: 20px;
+        }
+
+        .connect-button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(240, 147, 251, 0.4);
+        }
+
+        .connect-button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .status {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-weight: 500;
+        }
+
+        .status.connected {
+            background: linear-gradient(135deg, #56ab2f 0%, #a8e6cf 100%);
+            color: white;
+        }
+
+        .status.disconnected {
+            background: linear-gradient(135deg, #ff9a9e 0%, #fecfef 100%);
+            color: #d63031;
+        }
+
+        .status.connecting {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+        }
+
+        .pressure-display {
+            background: #f8f9fa;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .pressure-value {
+            font-size: 3em;
+            font-weight: bold;
+            color: #f5576c;
+            margin: 10px 0;
+        }
+
+        .pressure-label {
+            font-size: 1.2em;
+            color: #6c757d;
+            margin-bottom: 10px;
+        }
+
+        .logs {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            padding: 20px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .logs h3 {
+            margin-top: 0;
+            color: #495057;
+            font-size: 1.2em;
+        }
+
+        .logs-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .logs-header h3 {
+            margin: 0;
+            color: #495057;
+            font-size: 1.2em;
+        }
+
+        .log-entry {
+            padding: 8px 0;
+            border-bottom: 1px solid #e9ecef;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 1.4;
+        }
+
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+
+        .log-entry.timestamp {
+            color: #6c757d;
+            font-size: 12px;
+        }
+
+        .log-entry.error {
+            color: #dc3545;
+        }
+
+        .log-entry.success {
+            color: #28a745;
+        }
+
+        .log-entry.info {
+            color: #007bff;
+        }
+
+        .clear-logs {
+            display: block;
+            margin-top: 10px;
+            padding: 8px 16px;
+            background: #6c757d;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .clear-logs:hover {
+            background: #5a6268;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                margin: 10px;
+            }
+
+            .header {
+                padding: 20px;
+            }
+
+            .header h1 {
+                font-size: 2em;
+            }
+
+            .content {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🦶 SEBT 从机 BLE 驱动</h1>
+            <p>连接 SEBT 从机设备并转发压力传感器数据</p>
+        </div>
+
+        <div class="content">
+            <button id="connectBtn" class="connect-button">
+                🔗 连接 SEBT 从机设备
+            </button>
+
+            <div id="status" class="status disconnected">
+                📡 BLE: 未连接
+            </div>
+
+            <div class="pressure-display">
+                <div class="pressure-label">当前压力值</div>
+                <div id="pressureValue" class="pressure-value">--</div>
+                <div style="font-size: 0.9em; color: #6c757d;">单位: 压力传感器读数</div>
+            </div>
+
+            <div class="logs-header">
+                <h3>📝 连接日志</h3>
+                <button class="clear-logs" onclick="clearLogs()">清空日志</button>
+            </div>
+            <div class="logs">
+                <div id="logContainer"></div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        // 配置常量 - 从机BLE UUID
+        const SERVICE_UUID = '0000cccc-0000-1000-8000-00805f9b34fb';
+        const CHARACTERISTIC_UUID = '0000dddd-0000-1000-8000-00805f9b34fb';
+
+        // 全局变量
+        let device = null;
+        let characteristic = null;
+        let ws = null;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+
+        // DOM 元素
+        const connectBtn = document.getElementById('connectBtn');
+        const statusDiv = document.getElementById('status');
+        const logContainer = document.getElementById('logContainer');
+        const pressureValue = document.getElementById('pressureValue');
+
+        // 防止重复显示WebSocket错误日志
+        let websocketErrorLogged = false;
+
+        /**
+         * 添加连接日志（只在用户操作时显示）
+         */
+        function addConnectionLog(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.className = `log-entry ${type}`;
+            logEntry.innerHTML = `<span class="timestamp">[${timestamp}]</span> ${message}`;
+            logContainer.appendChild(logEntry);
+            logContainer.scrollTop = logContainer.scrollHeight;
+
+            // 同时输出到控制台
+            console.log(`[连接日志][${timestamp}] ${message}`);
+        }
+
+        /**
+         * 添加调试日志（只输出到控制台，不显示在界面）
+         */
+        function addDebugLog(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            console.log(`[${timestamp}] ${message}`);
+        }
+
+        /**
+         * 更新状态显示
+         */
+        function updateStatus(message, className) {
+            statusDiv.textContent = message;
+            statusDiv.className = `status ${className}`;
+            addConnectionLog(message, className === 'connected' ? 'success' : className === 'disconnected' ? 'error' : 'info');
+        }
+
+        /**
+         * 清空日志
+         */
+        function clearLogs() {
+            logContainer.innerHTML = '';
+            addConnectionLog('日志已清空', 'info');
+        }
+
+        /**
+         * 连接 WebSocket
+         */
+        function connectWebSocket() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                return;
+            }
+
+            addDebugLog('正在连接 WebSocket...', 'info');
+            ws = new WebSocket('ws://localhost:3000/ws');
+
+            ws.onopen = () => {
+                addDebugLog('WebSocket 连接成功', 'success');
+                reconnectAttempts = 0;
+                websocketErrorLogged = false;
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+
+                    // 处理来自Electron的数据
+                    if (data.type === 'connected') {
+                        addDebugLog(`收到服务器消息: ${data.message}`, 'success');
+                    } else if (data.type === 'slave_connected') {
+                        addConnectionLog('从机BLE设备已连接', 'success');
+                    } else if (data.type === 'slave_disconnected') {
+                        addConnectionLog('从机BLE设备已断开', 'error');
+                    } else if (data.type === 'close_ble_driver') {
+                        addDebugLog(`收到关闭指令: ${data.message}`, 'info');
+                        addConnectionLog('Electron主窗口已关闭，正在关闭BLE驱动页面...', 'info');
+                        setTimeout(() => {
+                            window.close();
+                        }, 2000);
+                    }
+                } catch (error) {
+                    addDebugLog(`解析WebSocket消息失败: ${error.message}`, 'error');
+                }
+            };
+
+            ws.onerror = (error) => {
+                if (!websocketErrorLogged) {
+                    addConnectionLog('WebSocket 连接错误', 'error');
+                    websocketErrorLogged = true;
+                }
+                addDebugLog(`WebSocket 错误: ${error}`, 'error');
+            };
+
+            ws.onclose = () => {
+                addDebugLog('WebSocket 连接断开', 'error');
+                websocketErrorLogged = false;
+
+                // 尝试重连
+                if (reconnectAttempts < maxReconnectAttempts) {
+                    reconnectAttempts++;
+                    setTimeout(() => {
+                        addDebugLog(`尝试重连 WebSocket (${reconnectAttempts}/${maxReconnectAttempts})`, 'info');
+                        connectWebSocket();
+                    }, 2000);
+                } else {
+                    addConnectionLog('WebSocket 重连失败，请刷新页面', 'error');
+                }
+            };
+        }
+
+        /**
+         * 发送数据到 Electron
+         */
+        function sendToElectron(data) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(data));
+            } else {
+                // 只在第一次遇到错误时显示日志
+                if (!websocketErrorLogged) {
+                    addConnectionLog('WebSocket 未连接，无法发送数据', 'error');
+                    websocketErrorLogged = true;
+                }
+            }
+        }
+
+        /**
+         * 连接 BLE 设备
+         */
+        async function connectBLEDevice() {
+            try {
+                addConnectionLog('🔄 BLE: 正在请求设备权限...', 'info');
+                updateStatus('🔄 BLE: 正在请求设备权限...', 'connecting');
+                connectBtn.disabled = true;
+
+                // 请求 BLE 设备
+                device = await navigator.bluetooth.requestDevice({
+                    filters: [{ services: [SERVICE_UUID] }],
+                    optionalServices: ['battery_service', 'device_information']
+                });
+
+                addConnectionLog(`发现设备: ${device.name || '未知设备'}`, 'success');
+
+                updateStatus('🔄 BLE: 正在连接 GATT 服务器...', 'connecting');
+
+                // 连接 GATT 服务器
+                const server = await device.gatt.connect();
+                addConnectionLog('GATT 服务器连接成功', 'success');
+
+                updateStatus('🔄 BLE: 正在发现服务...', 'connecting');
+
+                // 获取服务
+                const service = await server.getPrimaryService(SERVICE_UUID);
+                addConnectionLog('服务发现成功', 'success');
+
+                updateStatus('🔄 BLE: 正在发现特征...', 'connecting');
+
+                // 获取特征
+                characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+                addConnectionLog('特征发现成功', 'success');
+
+                updateStatus('🔄 BLE: 正在启用通知...', 'connecting');
+
+                // 启用通知
+                await characteristic.startNotifications();
+                addConnectionLog('通知已启用', 'success');
+
+                updateStatus('✅ BLE: 已连接', 'connected');
+                connectBtn.textContent = '🔌 断开连接';
+                connectBtn.disabled = false;
+
+                // 发送连接状态到Electron
+                sendToElectron({
+                    type: 'slave_connected',
+                    name: device.name || 'SEBT-Slave',
+                    address: device.id
+                });
+
+                // 设置数据接收处理
+                characteristic.addEventListener('characteristicvaluechanged', handleCharacteristicValueChanged);
+
+                // 设备断开处理
+                device.addEventListener('gattserverdisconnected', handleDisconnection);
+
+            } catch (error) {
+                addConnectionLog(`BLE 连接失败: ${error.message}`, 'error');
+                updateStatus('❌ BLE: 连接失败', 'disconnected');
+                connectBtn.disabled = false;
+                connectBtn.textContent = '🔗 连接 SEBT 从机设备';
+            }
+        }
+
+        /**
+         * 处理特征值变化（从机发送JSON格式数据）
+         */
+        function handleCharacteristicValueChanged(event) {
+            try {
+                const value = event.target.value;
+                
+                // 从机发送的是JSON格式字符串，需要转换为文本
+                const decoder = new TextDecoder('utf-8');
+                const jsonString = decoder.decode(value);
+                
+                // 解析JSON数据
+                const pressureData = JSON.parse(jsonString);
+                const pressure = pressureData.pressure || 0;
+
+                // 更新压力值显示
+                pressureValue.textContent = pressure;
+
+                // 构建数据对象
+                const sensorData = {
+                    type: 'slave_pressure_data',
+                    timestamp: Date.now(),
+                    pressure: pressure,
+                    source: 'slave',
+                    name: device.name || 'SEBT-Slave',
+                    address: device.id
+                };
+
+                // 发送到 Electron
+                sendToElectron(sensorData);
+
+                addDebugLog(`收到压力数据: ${pressure}`, 'info');
+
+            } catch (error) {
+                addConnectionLog(`解析压力数据失败: ${error.message}`, 'error');
+            }
+        }
+
+        /**
+         * 处理设备断开
+         */
+        function handleDisconnection() {
+            addConnectionLog('BLE 设备已断开连接', 'error');
+            updateStatus('❌ BLE: 已断开', 'disconnected');
+            connectBtn.textContent = '🔗 连接 SEBT 从机设备';
+            connectBtn.disabled = false;
+            pressureValue.textContent = '--';
+
+            // 发送断开状态到Electron
+            sendToElectron({
+                type: 'slave_disconnected',
+                name: device?.name || 'SEBT-Slave',
+                address: device?.id
+            });
+
+            device = null;
+            characteristic = null;
+        }
+
+        /**
+         * 断开 BLE 连接
+         */
+        async function disconnectBLEDevice() {
+            try {
+                addConnectionLog('正在断开BLE连接...', 'info');
+                if (characteristic) {
+                    await characteristic.stopNotifications();
+                }
+                if (device && device.gatt.connected) {
+                    device.gatt.disconnect();
+                }
+                addConnectionLog('BLE连接已断开', 'info');
+                handleDisconnection();
+            } catch (error) {
+                addConnectionLog(`断开连接时出错: ${error.message}`, 'error');
+            }
+        }
+
+        /**
+         * 按钮点击处理
+         */
+        connectBtn.addEventListener('click', async () => {
+            if (device && device.gatt.connected) {
+                await disconnectBLEDevice();
+            } else {
+                await connectBLEDevice();
+            }
+        });
+
+        /**
+         * 页面加载时的初始化
+         */
+        window.addEventListener('load', () => {
+            addDebugLog('从机 BLE 驱动页面已加载', 'info');
+
+            // 检查 Web Bluetooth 支持
+            if (!navigator.bluetooth) {
+                addConnectionLog('浏览器不支持 Web Bluetooth API', 'error');
+                updateStatus('❌ BLE: 浏览器不支持', 'disconnected');
+                connectBtn.disabled = true;
+                return;
+            }
+
+            addDebugLog('Web Bluetooth API 支持检测通过', 'success');
+
+            // 连接 WebSocket
+            connectWebSocket();
+        });
+
+        /**
+         * 页面卸载时的清理
+         */
+        window.addEventListener('beforeunload', () => {
+            if (ws) {
+                ws.close();
+            }
+            if (device && device.gatt.connected) {
+                device.gatt.disconnect();
+            }
+        });
+    </script>
+</body>
+</html>
+
